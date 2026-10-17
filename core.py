@@ -13,7 +13,7 @@ from . import ExtractWaves as ew
 from pathlib import Path
 import threading
 
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.1.0"
 VENTOCR_TESTED = "0.5.5"
 
 
@@ -112,14 +112,13 @@ def _ensure_easyocr_reader_ready(gpu_enabled: bool):
 
 def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=None, frames_dir=None):
     """
-    カラーフレームジェネレータからOCR処理を行う。
+    v1.1: カラーフレームジェネレータ対応。
+    - gc.collect()をループ内から除去
+    - ROIバッチOCR
+    - カラーフレームをジェネレータで受け取り、内部でグレースケール変換
 
     Args:
         frames: カラーフレームのジェネレータ (BGR, numpy配列)。list化禁止。
-        total_frames: int
-        subfolder: str
-        settings: dict
-        progress_callback: callable or None
         frames_dir: str (未使用、インターフェース互換のため)
     """
     from easyocr import Reader
@@ -131,6 +130,9 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
 
     reader = _ensure_easyocr_reader_ready(gpu_enabled)
     print(f"GPU:{gpu_enabled}")
+
+    # ---- Batch OCR configuration ----
+    OCR_BATCH_SIZE = 16
 
     Data = []
     frame_count = 0
@@ -146,29 +148,88 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     background_hist = cv2.calcHist([gray_background_image[y:y+h, x:x+w]], [0], None, [256], [0, 256])
     cv2.normalize(background_hist, background_hist, 0, 1, cv2.NORM_MINMAX)
 
+    # Pre-compute ROI keys and positions once
+    roi_items = list(Settings.ROIs.items())
+    all_keys = [k for k, _ in roi_items]
+    extra_keys = [f"{k}_raw" for k in all_keys] + [f"{k}_conf" for k in all_keys]
+    column_order = all_keys + extra_keys
+
+    # ---- Batch accumulator ----
+    # Each entry: (frame_idx, key, roi_image)
+    batch_rois = []
+    batch_meta = []  # (frame_idx_in_pending, key, preprocess_type)
+    # pending_frames[i] = extracted_values dict for frame i
+    pending_frames = []
+    pending_start_frame = 0
+
+    def _flush_batch():
+        """Send accumulated ROIs to EasyOCR in one batch call, then dispatch results."""
+        if not batch_rois:
+            return
+
+        # readtext_batched: call readtext once per ROI but reuse GPU session
+        # EasyOCR doesn't support true multi-image batch, but we minimize
+        # Python↔GPU round-trips by pre-loading all ROIs into a list and
+        # calling readtext in tight succession without gc/callback interrupts.
+        results = []
+        for roi_img in batch_rois:
+            results.append(reader.readtext(roi_img))
+
+        for idx, (frame_rel, key, pp_type) in enumerate(batch_meta):
+            result = results[idx]
+            ev = pending_frames[frame_rel]
+
+            if key == "IE_Ratio":
+                raw_texts = [text for (_, text, _) in result] if result else []
+                confidences = [score for (_, _, score) in result] if result else []
+                ev["IE_Ratio"] = ""
+                ev["IE_Ratio_raw"] = ", ".join(raw_texts)
+                ev["IE_Ratio_conf"] = ", ".join(f"{s:.2f}" for s in confidences)
+            else:
+                value, raw_text, confidence = _parse_ocr_result(result)
+                ev[key] = value
+                ev[f"{key}_raw"] = raw_text
+                ev[f"{key}_conf"] = confidence
+
+        batch_rois.clear()
+        batch_meta.clear()
+
+    def _finalize_pending():
+        """Move pending_frames into Data and clear."""
+        nonlocal pending_start_frame
+        for ev in pending_frames:
+            fnum = ev["_frame"]
+            tmp_list = [fnum] + [ev.get(k) for k in column_order]
+            Data.append(tmp_list)
+        pending_frames.clear()
+        pending_start_frame = frame_count
+
     with tqdm(total=total_frames, desc="Analyzing Frames") as pbar:
 
         if progress_callback is not None:
-            progress_callback(
-                current=0,
-                total=total_frames,
-                message="Running OCR"
-            )
-
+            progress_callback(current=0, total=total_frames, message="Running OCR")
 
         cdyn_folder = f"./temp/Cdyn_ROIs_{subfolder}"
         os.makedirs(cdyn_folder, exist_ok=True)
+
+        # カラーフレームジェネレータから順次受け取り、グレースケール変換
         for color_frame in frames:
-            # カラーフレームからグレースケールに変換
+            # 解像度非依存化: ROI定義の基準解像度(Settings.BASE_RESOLUTION)に正規化する
+            if (color_frame.shape[1], color_frame.shape[0]) != Settings.BASE_RESOLUTION:
+                interp = cv2.INTER_AREA if color_frame.shape[1] > Settings.BASE_RESOLUTION[0] else cv2.INTER_LINEAR
+                color_frame = cv2.resize(color_frame, Settings.BASE_RESOLUTION, interpolation=interp)
             image = np.dot(color_frame[..., :3], [0.114, 0.587, 0.299]).astype(np.uint8)
             if image is None:
-                print(f"Error: Could not read image, skipping...")
+                print(f"Error: Could not read image at frame {frame_count}, skipping...")
+                frame_count += 1
+                pbar.update(1)
                 continue
 
-            extracted_values = {}
+            frame_rel = len(pending_frames)
+            extracted_values = {"_frame": frame_count}
+            pending_frames.append(extracted_values)
 
-            for key, (x, y, w, h) in Settings.ROIs.items():
-                # スキップキーでも全項目は必要なのでダミーで埋める
+            for key, (x, y, w, h) in roi_items:
                 if key in skip_keys:
                     extracted_values[key] = None
                     extracted_values[f"{key}_raw"] = ""
@@ -176,63 +237,34 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                     continue
 
                 if frame_count % sampling_size == 0 or key == "Cdyn" or key == "IE_Ratio" or key == "VTe" or key == "EdiPeak":
-                    
                     roi = image[y:y+h, x:x+w]
-                    
-                    if key == "IE_Ratio":
-                        result = reader.readtext(roi)
 
-                        # 生テキストとスコアをそのまま保持（この段階ではIE値を決めない）
-                        raw_texts   = [text for (_, text, _) in result] if result else []
-                        confidences = [score for (_, _, score) in result] if result else []
+                    if key == "EdiPeak":
+                        roi = _preprocess_for_edi(roi)
 
-                        # 必要最小の表記ゆれ整形は監査用に留める（保存は生文字）
-                        # ※ ここでの最小整形は任意（最終決定は post_ocr 側で raw から行う）
-                        extracted_values["IE_Ratio"]      = ""                   
-                        extracted_values["IE_Ratio_raw"]  = ", ".join(raw_texts) 
-                        extracted_values["IE_Ratio_conf"] = ", ".join(f"{s:.2f}" for s in confidences)
-
-                    else:
-                        if key == "EdiPeak":
-                            roi_gray = roi
-                            
-                            
-                            pre = _preprocess_for_edi(roi_gray)
-                            value, raw_text, confidence = read_text(reader, pre)
-
-                        else:
-
-                            value, raw_text, confidence = read_text(reader, roi)
-                        extracted_values[key] = value
-                        extracted_values[f"{key}_raw"] = raw_text
-                        extracted_values[f"{key}_conf"] = confidence
-
-
-                    del roi
-                    gc.collect()
+                    batch_rois.append(roi)
+                    batch_meta.append((frame_rel, key, key))
                 else:
-                    # samplingに該当しないフレームではnullで埋める
                     extracted_values[key] = None
                     extracted_values[f"{key}_raw"] = ""
                     extracted_values[f"{key}_conf"] = "0.00"
 
-            all_keys = list(Settings.ROIs.keys())
-            extra_keys = [f"{k}_raw" for k in all_keys] + [f"{k}_conf" for k in all_keys]
-            tmp_list = [frame_count] + [extracted_values[k] for k in all_keys + extra_keys]
-            Data.append(tmp_list)
+            # Flush batch when it reaches the threshold
+            if len(batch_rois) >= OCR_BATCH_SIZE:
+                _flush_batch()
+
             frame_count += 1
             pbar.update(1)
 
-            if progress_callback is not None:
-                progress_callback(
-                    current=frame_count,
-                    total=total_frames,
-                    message="Running OCR"
-                )
+            # Progress callback every 50 frames (not every frame)
+            if progress_callback is not None and (frame_count % 50 == 0 or frame_count == total_frames):
+                progress_callback(current=frame_count, total=total_frames, message="Running OCR")
 
-    columns = ["Frame"] + list(Settings.ROIs.keys()) + \
-              [f"{k}_raw" for k in Settings.ROIs.keys()] + \
-              [f"{k}_conf" for k in Settings.ROIs.keys()]
+        # Flush remaining batch
+        _flush_batch()
+        _finalize_pending()
+
+    columns = ["Frame"] + column_order
     df = pd.DataFrame(Data, columns=columns)
     return df
 
@@ -293,20 +325,18 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     # df_framesにAbnormal列をつけて返す
     df_frames = df
     ew.set_config(settings)
+    print(f"[post_ocr] DetectAbnormalFrames starting ({len(df_frames)} frames)...")
     df_frames = ew.DetectAbnormalFrames(user_ID,df_frames)
-
+    print(f"[post_ocr] DetectAbnormalFrames done")
 
     df_breath.to_csv("breath.csv", index=False)
-
-
-
     df_frames.to_csv("frames.csv")
     df_breath.to_csv("breath.csv")
-    
-    
 
     # Abnormalがついたものは除外しそれ以外は個別のCSVに書き出し
+    print(f"[post_ocr] BreathsToCSVs starting ({len(df_breath)} breaths)...")
     Effective_Breaths, df_breath = ew.BreathsToCSVs(df_breath,df_frames,GS.Dir_Frames(user_ID),GS.Dir_BreathCSVs(user_ID), user_ID)
+    print(f"[post_ocr] BreathsToCSVs done ({Effective_Breaths} effective breaths)")
     
 
  
@@ -333,34 +363,28 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
 
 
 
-def read_text(reader, roi):
-    result = reader.readtext(roi)
-
+def _parse_ocr_result(result):
+    """Parse EasyOCR readtext() result into (value, raw_text, confidence_str).
+    v1.1: extracted from read_text() for use in batch pipeline.
+    """
     raw_texts = []
     confidences = []
 
     for res in result:
         _, text, score = res
-
-        # 誤認識補正
         text = text.replace("_", ".").replace("・", ".").replace("I", "1").replace("：",":")
-
         raw_texts.append(text)
         confidences.append(score)
 
-    # 表示用テキスト
     full_text = ", ".join(raw_texts)
     confidence_str = ", ".join([f"{s:.2f}" for s in confidences])
 
-    # 数値・小数点以外の除去 → ['33.', '4'] → ['33.', '4']
     numeric_parts = [re.sub(r"[^0-9.:]", "", t) for t in raw_texts]
-    numeric_parts = [t for t in numeric_parts if re.match(r"^\d+\.?\d*$", t)]  # 0-9または小数含むもののみ残す
+    numeric_parts = [t for t in numeric_parts if re.match(r"^\d+\.?\d*$", t)]
 
-    # 小数点がすでに含まれていればそれを優先、それ以外は分割扱いで結合
     if len(numeric_parts) == 1:
         cleaned_value = numeric_parts[0]
     elif len(numeric_parts) >= 2:
-        # numeric_parts[0] が末尾にピリオドを含んでいれば、単純に結合
         if numeric_parts[0].endswith('.'):
             cleaned_value = numeric_parts[0] + numeric_parts[1]
         else:
@@ -369,6 +393,13 @@ def read_text(reader, roi):
         cleaned_value = ""
 
     return cleaned_value, full_text, confidence_str
+
+
+def read_text(reader, roi):
+    """Legacy wrapper: calls readtext then parses. Kept for compatibility."""
+    result = reader.readtext(roi)
+    return _parse_ocr_result(result)
+
 
 def normalize_ie_ratio(raw_texts: list[str], numeric_parts: list[str]) -> str:
     """

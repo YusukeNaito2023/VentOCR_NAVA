@@ -1,0 +1,27 @@
+{
+  "engine_key": "nava_ventocr_v1_1",
+  "display_name": "NAVA v1.1",
+  "developer": "VentOCR Developer Team",
+  "version": "1.1.0",
+  "ventocr_min": "0.5.5",
+  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720)",
+
+  "sample_video": "Sample_NAVA_VentOCR.mp4",
+  "base_resolution": "1280x720",
+  "supported_resolutions": ["1280x720", "1920x1080"],
+
+  "has_extract_waves": false,
+  "output_columns": {
+    "frames": ["Frame", "VTi", "VTe", "Cdyn", "Triggered", "BreathMark"],
+    "breaths": ["BreathNumber", "Cdyn", "VTe", "Real_VTe"]
+  },
+
+  "breath_summary": ["VTe", "Real_VTe", "EdiPeak", "Cdyn", "IE_Ratio"],
+
+  "accuracy": {
+    "VTe":        { "method": null, "threshold": null, "unit": "mL" },
+    "VTi":        { "method": null, "threshold": null, "unit": "mL" },
+    "Cdyn":       { "method": null, "threshold": null, "unit": "mL/cmH2O" },
+    "BreathMark": { "method": null, "threshold": null }
+  }
+}

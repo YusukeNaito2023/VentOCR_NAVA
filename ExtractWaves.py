@@ -7,6 +7,18 @@ from tqdm import tqdm
 import Global_Setting as GS
 from . import Settings
 
+
+def _load_frame(path):
+    """フレーム画像を読み込み、基準解像度(Settings.BASE_RESOLUTION)へ正規化する。
+    解像度非依存化のため、ROI/Y_RANGES定義の基準解像度に全フレームを揃える。"""
+    img = cv2.imread(path)
+    if img is None:
+        return None
+    if (img.shape[1], img.shape[0]) != Settings.BASE_RESOLUTION:
+        interp = cv2.INTER_AREA if img.shape[1] > Settings.BASE_RESOLUTION[0] else cv2.INTER_LINEAR
+        img = cv2.resize(img, Settings.BASE_RESOLUTION, interpolation=interp)
+    return img
+
 # --- 欠損値補完とスムージングを行うかどうか ---
 
 SMOOTHING = True
@@ -100,7 +112,7 @@ def _extract_waveform(img, target_bgr, max_dist=40, waveform_name=None, y_offset
 # --- 画像から時系列データを抽出 ---
 def extract_waveform_timeseries(image_path, x_start=524, x_end=807):
     globals()["x_start"] = x_start
-    img = cv2.imread(image_path)
+    img = _load_frame(image_path)
     waveforms = {}
     for name, (y1, y2) in Y_RANGES.items():
         crop = img[y1:y2, x_start:x_end]
@@ -147,8 +159,8 @@ def get_difference_regions(image_path1, image_path2):
     y_ranges = [(88, 220), (224, 357), (363, 493)]
 
     # 画像読み込み
-    img1 = cv2.imread(image_path1)
-    img2 = cv2.imread(image_path2)
+    img1 = _load_frame(image_path1)
+    img2 = _load_frame(image_path2)
 
     # 各Y範囲に対する差分領域を抽出
     region_sets = []
@@ -542,8 +554,20 @@ def DetectAbnormalFrames(user_id,df_frames):
 
     base_frame_dir = GS.Dir_Frames(user_id)
 
-    REFERENCE_IMAGE_PATH = os.path.join(GS.Dir_Frames(user_id),"00000", "frame_00000000.jpg")
-    #REFERENCE_IMAGE_PATH = os.path.join(script_dir, "normal.jpg")
+    # 正常基準フレームの自動選定:
+    # 動画冒頭は黒画面/フェードインの場合があり frame_00000000 を固定で使えない。
+    # また異常検知は「同一動画の正常フレーム」を基準にする必要があるため、
+    # 対象動画の先頭から走査して最初の「黒でない」フレームを正常基準として採用する。
+    # （_load_frame で基準解像度に正規化されるため解像度非依存）
+    def _find_reference_frame():
+        for _, r in df_frames.iterrows():
+            sub = str(r["source_file"]).replace("output_", "").replace(".csv", "")
+            cand = os.path.join(base_frame_dir, sub,
+                                "frame_" + str(int(r["iFrame"])).zfill(8) + ".jpg")
+            im = _load_frame(cand)
+            if im is not None and im.mean() > 20:  # 黒画面(mean≈0)を除外
+                return im
+        return None
 
 
     # ROIの座標
@@ -565,9 +589,9 @@ def DetectAbnormalFrames(user_id,df_frames):
         return cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
 
     # 正常画像のROI処理
-    ref_img = cv2.imread(REFERENCE_IMAGE_PATH)
+    ref_img = _find_reference_frame()
     if ref_img is None:
-        raise FileNotFoundError(f"正常画像が読み込めません: {REFERENCE_IMAGE_PATH}")
+        raise FileNotFoundError("正常基準フレームが見つかりません（全フレームが黒/読込不可）")
 
     ref_rois = []
     ref_grays = []
@@ -592,11 +616,11 @@ def DetectAbnormalFrames(user_id,df_frames):
         filepath = os.path.join(folder_name, file_name)
 
 
-        img = cv2.imread(filepath)
+        img = _load_frame(filepath)
 
         if img is None:
             print(f"⚠️ 画像読み込み失敗: {filepath}")
-            results.append(["読み込み失敗"])
+            results.append(["0", 0.0, 0.0, 0.0])
             continue
 
         abnormal = False

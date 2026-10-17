@@ -1,3 +1,8 @@
+# 基準解像度 (width, height)
+# 入力フレームはこの解像度に正規化してから ROI を適用する（解像度非依存化）。
+# 下記の ROIs / ROI_LIST_Abnormal_Detection はすべてこの解像度の座標系で定義する。
+BASE_RESOLUTION = (1280, 720)
+
 # Region of Interest
 # Definition from NAVA_Layout_1.jpg
 ROIs = {
