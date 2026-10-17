@@ -128,11 +128,27 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     similarity_thresh = settings["initial_ocr"]["similarity_thresh"]
     gpu_enabled = settings["initial_ocr"]["use_gpu"]
 
+    # 差分ゲーティング設定（未設定の古いengine_optionsでも動くようdefault付き）
+    _io = settings["initial_ocr"]
+    diff_gating = _io.get("diff_gating", True)
+    diff_thresh = _io.get("diff_thresh", 2.0)
+    diff_thresh_cdyn = _io.get("diff_thresh_cdyn", 0.5)  # Cdynは安全側で低閾値
+    # recognizeのconfがこの閾値未満ならreadtext(検出あり)にフォールバック
+    recognize_conf_fallback = _io.get("recognize_conf_fallback", 0.5)
+
     reader = _ensure_easyocr_reader_ready(gpu_enabled)
     print(f"GPU:{gpu_enabled}")
 
     # ---- Batch OCR configuration ----
     OCR_BATCH_SIZE = 16
+
+    # 検出スキップ(recognize)対象: 単一数値ROI。
+    # IE_Ratio/Triggeredは複数トークン/検出が有効なのでreadtextのまま残す。
+    RECOGNIZE_KEYS = {"VTe", "EdiPeak", "Cdyn", "Ppeak", "VTi"}
+    # 差分ゲーティング対象: 毎フレームOCRしている数値表示ROI
+    GATED_KEYS = {"VTe", "EdiPeak", "Cdyn", "IE_Ratio", "Ppeak", "VTi"}
+    # 毎フレームOCRするROI（それ以外は sampling_size ごと）。値は呼吸ごとにしか変わらないので差分ゲーティングで大半を省ける
+    EVERY_FRAME_KEYS = {"Cdyn", "IE_Ratio", "VTe", "EdiPeak", "Ppeak", "VTi"}
 
     Data = []
     frame_count = 0
@@ -162,6 +178,11 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     pending_frames = []
     pending_start_frame = 0
 
+    # 差分ゲーティング用の状態（ROIキーごと）
+    prev_roi = {}        # key -> 最後にOCRした時のROI(ndarray)
+    last_ocr_idx = {}    # key -> そのROIをOCRしたpending_frames index
+    reuse_links = []     # (target_frame_rel, key, source_frame_rel)
+
     def _flush_batch():
         """Send accumulated ROIs to EasyOCR in one batch call, then dispatch results."""
         if not batch_rois:
@@ -172,8 +193,21 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
         # Python↔GPU round-trips by pre-loading all ROIs into a list and
         # calling readtext in tight succession without gc/callback interrupts.
         results = []
-        for roi_img in batch_rois:
-            results.append(reader.readtext(roi_img))
+        for roi_img, (frame_rel, key, pp_type) in zip(batch_rois, batch_meta):
+            if key in RECOGNIZE_KEYS:
+                # 検出(CRAFT)をスキップし認識(CRNN)のみ実行。ROI全体を1行として読む
+                rc = reader.recognize(roi_img)
+                conf_rc = max((c for _, _, c in rc), default=0.0)
+                # 低信頼時はreadtext(検出あり)にフォールバックし信頼度の高い方を採用。
+                # recognizeはタイトな数字ROIで稀に端のノイズを桁と誤認する（その時conf低）ため。
+                if conf_rc < recognize_conf_fallback:
+                    rd = reader.readtext(roi_img)
+                    conf_rd = max((c for _, _, c in rd), default=0.0)
+                    results.append(rd if conf_rd >= conf_rc else rc)
+                else:
+                    results.append(rc)
+            else:
+                results.append(reader.readtext(roi_img))
 
         for idx, (frame_rel, key, pp_type) in enumerate(batch_meta):
             result = results[idx]
@@ -236,14 +270,27 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                     extracted_values[f"{key}_conf"] = "0.00"
                     continue
 
-                if frame_count % sampling_size == 0 or key == "Cdyn" or key == "IE_Ratio" or key == "VTe" or key == "EdiPeak":
+                if frame_count % sampling_size == 0 or key in EVERY_FRAME_KEYS:
                     roi = image[y:y+h, x:x+w]
 
                     if key == "EdiPeak":
                         roi = _preprocess_for_edi(roi)
 
+                    # 差分ゲーティング: 前回OCR時のROIとほぼ同じならOCRを省略し、
+                    # 前回OCRしたフレームの結果をfinalize時にコピーする
+                    if diff_gating and key in GATED_KEYS and key in prev_roi \
+                            and prev_roi[key].shape == roi.shape:
+                        thresh = diff_thresh_cdyn if key == "Cdyn" else diff_thresh
+                        mad = np.abs(roi.astype(np.int16) - prev_roi[key].astype(np.int16)).mean()
+                        if mad < thresh:
+                            reuse_links.append((frame_rel, key, last_ocr_idx[key]))
+                            continue
+
                     batch_rois.append(roi)
                     batch_meta.append((frame_rel, key, key))
+                    if key in GATED_KEYS:
+                        prev_roi[key] = roi.copy()
+                        last_ocr_idx[key] = frame_rel
                 else:
                     extracted_values[key] = None
                     extracted_values[f"{key}_raw"] = ""
@@ -262,6 +309,16 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
 
         # Flush remaining batch
         _flush_batch()
+
+        # 差分ゲーティングで再利用したフレームに、参照元フレームのOCR結果を反映。
+        # pending_framesはセグメント終端まで保持されるため、参照元の値は確定済み。
+        for tgt, key, src in reuse_links:
+            ev_t = pending_frames[tgt]
+            ev_s = pending_frames[src]
+            ev_t[key] = ev_s.get(key)
+            ev_t[f"{key}_raw"] = ev_s.get(f"{key}_raw", "")
+            ev_t[f"{key}_conf"] = ev_s.get(f"{key}_conf", "0.00")
+
         _finalize_pending()
 
     columns = ["Frame"] + column_order
@@ -271,14 +328,23 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
         
         
 def post_ocr(df, Analyze_Id, user_ID, settings={}) :
-    
-    
+
+    # post_ocr 内の各サブ段階を overall 進捗へ流すヘルパー（停止しているように見える問題対策）。
+    # 既存の ExtractWaves._report_progress（progress_io ベース・ベストエフォート）を流用する。
+    def _pp(msg, cur=0, tot=0):
+        try:
+            ew._report_progress(user_ID, Analyze_Id, message=msg, current=cur, total=tot)
+        except Exception:
+            pass
+
+    _pp(f"post_ocr: 呼吸番号を付与中 ({len(df)} rows)")
     df["IE_Ratio"] = df["IE_Ratio_raw"].apply(parse_IE_ratio)
 
 
     df = CreateBreathNumber(df) # Cdynの値を前後の値などで修正し、その後Breath Numberを作成
 
         
+    _pp("post_ocr: 時刻・呼吸代表値を集計中")
     # 動画でのおおよその時間をFPSをもとにDFに書き込み
     frame_interval = 1 / GS.FPS
     df["Time"] = pd.to_timedelta(df["Frame"] * frame_interval, unit="s")
@@ -287,6 +353,12 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
    
    # 次の呼吸のVTi, VTeを取得（VTiなどは途中で変わるので一番初めの値を取得。これが実際の換気量を反映している）
     df['Real_VTe'] = Shift_Values(df, "VTe")
+    # Ppeak / VTi も呼吸の終わり（=次の呼吸の先頭）で更新されるので、次の呼吸の先頭の値がその呼吸の値。
+    # 波形の軸スケール推定（ExtractWaves._estimate_scales）に使う
+    for key in ("Ppeak", "VTi"):
+        if key in df.columns:
+            df[key] = pd.to_numeric(df[key], errors="coerce")
+            df[f"Real_{key}"] = Shift_Values(df, key)
 
     # 1呼吸ごとのデータフレームも作成
     df_breath = df.loc[df.groupby('BreathNumber')['Frame'].idxmin()]
@@ -325,8 +397,9 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     # df_framesにAbnormal列をつけて返す
     df_frames = df
     ew.set_config(settings)
+    _pp(f"post_ocr: 異常フレーム検知中 ({len(df_frames)} frames)")
     print(f"[post_ocr] DetectAbnormalFrames starting ({len(df_frames)} frames)...")
-    df_frames = ew.DetectAbnormalFrames(user_ID,df_frames)
+    df_frames = ew.DetectAbnormalFrames(user_ID,df_frames,analyze_id=Analyze_Id)
     print(f"[post_ocr] DetectAbnormalFrames done")
 
     df_breath.to_csv("breath.csv", index=False)
@@ -334,15 +407,26 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     df_breath.to_csv("breath.csv")
 
     # Abnormalがついたものは除外しそれ以外は個別のCSVに書き出し
+    _pp(f"post_ocr: 呼吸ごとのCSVを書き出し中 ({len(df_breath)} breaths)")
     print(f"[post_ocr] BreathsToCSVs starting ({len(df_breath)} breaths)...")
-    Effective_Breaths, df_breath = ew.BreathsToCSVs(df_breath,df_frames,GS.Dir_Frames(user_ID),GS.Dir_BreathCSVs(user_ID), user_ID)
+    # 軸スケールは Real_Ppeak / Real_VTi と波形から推定する（軸の数字はOCRしないので reader は不要）
+    Effective_Breaths, df_breath = ew.BreathsToCSVs(df_breath,df_frames,GS.Dir_Frames(user_ID),GS.Dir_BreathCSVs(user_ID), user_ID, analyze_id=Analyze_Id, settings=settings)
     print(f"[post_ocr] BreathsToCSVs done ({Effective_Breaths} effective breaths)")
+
+    # Detect Sweep Line（既定OFF）: 有効時は各フレームに掃引カーソルを描き込んで上書き保存する（診断用）
+    if settings.get("post_ocr", {}).get("detect_sweep_line", False):
+        print("[post_ocr] Detect Sweep Line: annotating frames with sweep cursor...")
+        _n_sweep = ew.annotate_sweep_lines(df_frames, GS.Dir_Frames(user_ID))
+        print(f"[post_ocr] Detect Sweep Line: annotated {_n_sweep} frames")
     
 
  
 
     # fields.txt を作成（セクション形式）
-    archive_dir = os.path.join(GS.Dir_Archive(user_ID), f"AID_{Analyze_Id}")
+    # 保存先は Main.py のアーカイブ処理と同じ Archive_Dir_For を使う。
+    # 別保存先ディスク(VentOCR_Archive_*)選択時に fields.txt/scale_meta.json が
+    # 既定(Temporary)側へ取り残されて Label がグラフを描けない不具合を防ぐ。
+    archive_dir = GS.Archive_Dir_For(user_ID, Analyze_Id)
     os.makedirs(archive_dir, exist_ok=True)
 
     fields_path = os.path.join(archive_dir, "fields.txt")
@@ -352,11 +436,17 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
             f.write(f"{w}\n")
         f.write("\n")
         f.write("[fields]\n")
-        for field in ["Cdyn", "VTe", "EdiPeak", "Real_VTe", "Real_VTe2", "Alert"]:
+        for field in ["Cdyn", "VTe", "EdiPeak", "Real_VTe", "Real_VTe2", "Real_Ppeak", "Real_VTi", "Alert"]:
             f.write(f"{field}\n")
 
-
-
+    # scale_meta.json を保存（Engine特有のスケール調整設定: ステップ幅/単位/対称性）。
+    # Label(Flask/JS) がArchiveから読み、+/- ボタンのステップ等をEngineごとに適用する。
+    try:
+        import json as _json
+        with open(os.path.join(archive_dir, "scale_meta.json"), "w", encoding="utf-8") as f:
+            _json.dump(ew.scale_meta(), f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[post_ocr] scale_meta.json 書き出し失敗: {e}")
 
     return df_frames, df_breath
 
@@ -529,8 +619,19 @@ def Shift_Values(df, column):
 
 
 def most_frequent(series):
-    mode_values = series.dropna().mode() 
+    mode_values = series.dropna().mode()
     return mode_values.iloc[0] if not mode_values.empty else None
+
+
+def _segment_by_cdyn(cdyn):
+    """Cdynの値変化で呼吸境界(BreathNumber)を作る。
+    連続するNaN(***＝Cdyn読取り不能)は「同一呼吸」とみなして束ねる。
+    pandasでは NaN != NaN が True のため、素朴な ne(shift) だと***呼吸が
+    1フレームずつ別セグメントに分裂し、後段の短呼吸マージで隣に吸収されて
+    消滅する。連続NaNを境界にしないことで、***呼吸を独立した1呼吸として保持する。"""
+    changed = cdyn.ne(cdyn.shift())
+    changed &= ~(cdyn.isna() & cdyn.shift().isna())   # 連続NaN同士は変化なし扱い
+    return changed.cumsum()
 
 
 def CreateBreathNumber(df,
@@ -539,7 +640,8 @@ def CreateBreathNumber(df,
                        ignore_last_k_within_breath=3,
                        N_for_moving_avg=30,
                        long_ratio=1.5,
-                       short_ratio=0.5):
+                       short_ratio=0.5,
+                       ie_split_min_delta=0.15):
     import pandas as pd
     import numpy as np
 
@@ -548,8 +650,8 @@ def CreateBreathNumber(df,
     if "Alert" not in df.columns:
         df["Alert"] = ""
 
-    # ---- Step 1: Cdyn で大まかに分割 ----
-    df["BreathNumber"] = (df["Cdyn"] != df["Cdyn"].shift()).cumsum()
+    # ---- Step 1: Cdyn で大まかに分割 ----（連続NaN=***は1呼吸として束ねる）
+    df["BreathNumber"] = _segment_by_cdyn(df["Cdyn"])
 
     # ---- Step 1.5: 短い呼吸(<=5フレーム)を隣接に統合（既存：IEベースの判定）----
     counts = df.groupby("BreathNumber").size()
@@ -583,10 +685,13 @@ def CreateBreathNumber(df,
         df.loc[idxs, "BreathNumber"] = target_bn
         df.loc[idxs, "Cdyn"] = target_cd
 
-    # ---- 統合後に Cdyn が前後で一致していたらまとめる ----
-    df["BreathNumber"] = (df["Cdyn"] != df["Cdyn"].shift()).cumsum()
+    # ---- 統合後に Cdyn が前後で一致していたらまとめる ----（同上：連続NaNは束ねる）
+    df["BreathNumber"] = _segment_by_cdyn(df["Cdyn"])
 
     # ---- Step 2: IE_Ratio < IECutoff の変化で追加分割 ----
+    # 分割はCdyn一定の区間内でのみ起き、IEの「変化」が信頼できる時だけ採用する。
+    # （IE読取りの化け/空欄(0.0)との遷移や微小ジッタを境界と誤認すると、Cdyn一定の1呼吸を
+    #   割ってFragmentを量産する。実データ照合でIE駆動Fragment 12件を解消・Cdyn由来16件は保持。）
     base_breath = df["BreathNumber"].copy()
     split_flag = pd.Series(0, index=df.index, dtype=int)
 
@@ -595,6 +700,7 @@ def CreateBreathNumber(df,
         if not g_idx:
             continue
         ier = g["IE_Ratio"]
+        prev_ier = ier.shift(1)
         changed = ier.ne(ier.shift(1))
         changed.iloc[0] = False
         pos = pd.Series(range(len(g_idx)), index=g_idx)
@@ -605,9 +711,16 @@ def CreateBreathNumber(df,
             n = len(g_idx); p = pos.loc[i]
             if p < ignore_first_m_within_breath: continue
             if p >= n - ignore_last_k_within_breath: continue
-            v = ier.loc[i]
-            if pd.notna(v) and v < IECutoff:
-                split_flag.loc[i] = 1
+            v = ier.loc[i]; pv = prev_ier.loc[i]
+            if not (pd.notna(v) and v < IECutoff):
+                continue
+            # 化け/空欄IE(0.0)との遷移では割らない（読取りの出現/消失は呼吸境界ではない）
+            if not (pd.notna(pv) and pv > 0 and v > 0):
+                continue
+            # 微小なIEジッタでは割らない（信頼できる変化幅のみ境界とみなす）
+            if abs(v - pv) < ie_split_min_delta:
+                continue
+            split_flag.loc[i] = 1
 
     df["BreathNumber"] = base_breath + split_flag.cumsum()
 

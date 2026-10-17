@@ -2,7 +2,7 @@ ENGINE_SETTINGS_SCHEMA = {
     "initial_ocr": {
         "skip_keys": {
             "type": "multiselect",
-            "choices": ["Cdyn", "EdiPeak", "Triggered", "VTe"],
+            "choices": ["Cdyn", "EdiPeak", "Triggered", "VTe", "Ppeak", "VTi"],
             "default": [],
             "label": "ROI Keys to be skipped"
         },
@@ -38,6 +38,11 @@ ENGINE_SETTINGS_SCHEMA = {
             "type": "bool",
             "default": False,
             "label": "Apply Interpolation"
+        },
+        "detect_sweep_line": {
+            "type": "bool",
+            "default": False,
+            "label": "Detect Sweep Line (annotate frames)"
         }
     }
 }

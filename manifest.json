@@ -1,10 +1,10 @@
 {
-  "engine_key": "nava_ventocr_v1_1",
-  "display_name": "NAVA v1.1",
+  "engine_key": "nava_ventocr_v1_2",
+  "display_name": "NAVA v1.2",
   "developer": "VentOCR Developer Team",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "ventocr_min": "0.5.5",
-  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720)",
+  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720). v1.2: HSV hue-based waveform matching for robust detection of steep pressure rises on downscaled/high-resolution recordings.",
 
   "sample_video": "Sample_NAVA_VentOCR.mp4",
   "base_resolution": "1280x720",
@@ -12,11 +12,11 @@
 
   "has_extract_waves": false,
   "output_columns": {
-    "frames": ["Frame", "VTi", "VTe", "Cdyn", "Triggered", "BreathMark"],
-    "breaths": ["BreathNumber", "Cdyn", "VTe", "Real_VTe"]
+    "frames": ["Frame", "VTi", "VTe", "Cdyn", "Triggered", "BreathMark", "Ppeak"],
+    "breaths": ["BreathNumber", "Cdyn", "VTe", "Real_VTe", "Real_Ppeak", "Real_VTi"]
   },
 
-  "breath_summary": ["VTe", "Real_VTe", "EdiPeak", "Cdyn", "IE_Ratio"],
+  "breath_summary": ["VTe", "Real_VTe", "Real_VTi", "Real_Ppeak", "EdiPeak", "Cdyn", "IE_Ratio"],
 
   "accuracy": {
     "VTe":        { "method": null, "threshold": null, "unit": "mL" },

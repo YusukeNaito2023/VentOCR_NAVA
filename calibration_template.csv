@@ -1,0 +1,67 @@
+section,item,param,current_value,measured_value,format,where_to_measure
+A_波形バンド,Pressure,top_y,88,86,y(px),Pawパネル上端の水平線(=スケール最大 +40 cmH2O の線)の中心y。左軸ラベル「40」の高さ。
+A_波形バンド,Pressure,bottom_y,220,222,y(px),Pawパネル下端の水平線(=最小 -4 cmH2O の線)の中心y。左軸ラベル「-4」の高さ。
+A_波形バンド,Pressure,top_value,40,40,値,top_yが表す物理値(=軸ラベルの最大値)。通常+40。自動レンジで変わる場合は実機で確認。
+A_波形バンド,Pressure,bottom_value,-4,-4,値,bottom_yが表す物理値。固定 -4。
+A_波形バンド,Pressure,zero_y(参考),208,208,y(px),0 cmH2O のグリッド線中心y(検証用・任意)。
+A_波形バンド,Flow,top_y,244,222,y(px),フローパネル上端線(=+max +100 l/min の線)の中心y。左軸ラベル「100」の高さ。
+A_波形バンド,Flow,bottom_y,339,358,y(px),フローパネル下端線(=-max -100 l/min の線)の中心y。左軸ラベル「-100」の高さ。
+A_波形バンド,Flow,top_value,100,100,値,top_yが表す物理値(+max)。通常+100。
+A_波形バンド,Flow,bottom_value,-100,-100,値,bottom_yが表す物理値(-max)。Flowは対称軸なので -top_value。
+A_波形バンド,Flow,zero_y(参考),291,291,y(px),0 l/min の明るい静的水平線の中心y(検証用)。top_yとbottom_yの中点になるはず。
+A_波形バンド,Volume,top_y,370,359,y(px),Vパネル上端線(=スケール最大 450 ml の線)の中心y。左軸ラベル「450」の高さ。
+A_波形バンド,Volume,bottom_y,497,495,y(px),Vパネル下端線(=0 ml の線)の中心y。左軸ラベル「0」の高さ。
+A_波形バンド,Volume,top_value,450,450,値,top_yが表す物理値(=軸ラベル最大)。自動レンジで変わる。
+A_波形バンド,Volume,bottom_value,0,0,値,bottom_yが表す物理値。固定 0 ml。
+A_波形バンド,Edi,top_y,513,496,y(px),Ediパネル上端線(=スケール最大 12 uV の線)の中心y。左軸ラベル「12」の高さ。
+A_波形バンド,Edi,bottom_y,633,631,y(px),Ediパネル下端線(=0 uV の線)の中心y。左軸ラベル「0」の高さ。
+A_波形バンド,Edi,top_value,12,12,値,top_yが表す物理値。EdiはOCR困難なためEdiPeakで別途校正するが、参考に測る。
+A_波形バンド,Edi,bottom_value,0,0,値,bottom_yが表す物理値。固定 0 uV。
+B_掃引域x,Plot,x_left,140,140,x(px),4パネル共通の波形プロット域の左境界x(縦の境界線)。
+B_掃引域x,Plot,x_right,893,893,x(px),波形プロット域の右境界x。右側の数値パネルとの境目。
+B_掃引域x,Plot,x_label_right,175,175,x(px),左軸ラベル/文字が波形に重なる左帯の右端x。
+B_掃引域x,Plot,wrap_left_edge,160,160,x(px),掃引折り返し判定の左端閾値(x_leftよりやや内側)。
+B_掃引域x,Plot,wrap_right_edge,872,872,x(px),掃引折り返し判定の右端閾値(x_rightよりやや内側)。
+B_掃引域x,Edi,sweep_cutoff_x,847,847,x(px),Ediで掃引カーソル以降を無効化するx。カーソル(白縦線)の位置。
+C_スケール数値OCR枠,Pressure,x,132,,x(px),Pawの軸最大数字「40」の外接枠 左上x。
+C_スケール数値OCR枠,Pressure,y,86,,y(px),同 左上y。
+C_スケール数値OCR枠,Pressure,w,54,,幅(px),同 枠の幅。
+C_スケール数値OCR枠,Pressure,h,22,,高さ(px),同 枠の高さ。
+C_スケール数値OCR枠,Flow,x,132,,x(px),フローの軸最大数字「100」の外接枠 左上x。
+C_スケール数値OCR枠,Flow,y,224,,y(px),同 左上y。
+C_スケール数値OCR枠,Flow,w,54,,幅(px),同 幅。
+C_スケール数値OCR枠,Flow,h,22,,高さ(px),同 高さ。
+C_スケール数値OCR枠,Volume,x,126,,x(px),Vの軸最大数字「450」の外接枠 左上x。
+C_スケール数値OCR枠,Volume,y,360,,y(px),同 左上y。
+C_スケール数値OCR枠,Volume,w,56,,幅(px),同 幅。
+C_スケール数値OCR枠,Volume,h,22,,高さ(px),同 高さ。
+D_数値表示OCR枠,VTe,x,1139,,x(px),右パネル「VTe」数値(441 ml)の外接枠 左上x。
+D_数値表示OCR枠,VTe,y,450,,y(px),同 左上y。
+D_数値表示OCR枠,VTe,w,55,,幅(px),同 幅。
+D_数値表示OCR枠,VTe,h,30,,高さ(px),同 高さ。
+D_数値表示OCR枠,EdiPeak,x,953,,x(px),「Edipeak」数値(12.0 uV)の外接枠 左上x。
+D_数値表示OCR枠,EdiPeak,y,518,,y(px),同 左上y。
+D_数値表示OCR枠,EdiPeak,w,67,,幅(px),同 幅。
+D_数値表示OCR枠,EdiPeak,h,31,,高さ(px),同 高さ。
+D_数値表示OCR枠,Cdyn,x,1110,,x(px),「Cdyn」数値(27.2 ml/cmH2O)の外接枠 左上x。
+D_数値表示OCR枠,Cdyn,y,531,,y(px),同 左上y。
+D_数値表示OCR枠,Cdyn,w,164,,幅(px),同 幅。
+D_数値表示OCR枠,Cdyn,h,62,,高さ(px),同 高さ。
+D_数値表示OCR枠,Triggered,x,843,,x(px),上部「トリガ/換気状態」マーク領域の外接枠 左上x。
+D_数値表示OCR枠,Triggered,y,50,,y(px),同 左上y。
+D_数値表示OCR枠,Triggered,w,49,,幅(px),同 幅。
+D_数値表示OCR枠,Triggered,h,34,,高さ(px),同 高さ。
+D_数値表示OCR枠,IE_Ratio,x,1086,,x(px),「I:E」数値(1:2.1)の外接枠 左上x。
+D_数値表示OCR枠,IE_Ratio,y,243,,y(px),同 左上y。
+D_数値表示OCR枠,IE_Ratio,w,168,,幅(px),同 幅。
+D_数値表示OCR枠,IE_Ratio,h,44,,高さ(px),同 高さ。
+E_異常検知帯,ROI1_左帯,x1,144,,x(px),左参照帯(画面左の縦帯)の左上x。
+E_異常検知帯,ROI1_左帯,y1,91,,y(px),同 左上y。
+E_異常検知帯,ROI1_左帯,x2,172,,x(px),同 右下x。
+E_異常検知帯,ROI1_左帯,y2,631,,y(px),同 右下y。
+E_異常検知帯,ROI2_右帯,x1,1226,,x(px),右参照帯(画面右の縦帯)の左上x。
+E_異常検知帯,ROI2_右帯,y1,92,,y(px),同 左上y。
+E_異常検知帯,ROI2_右帯,x2,1251,,x(px),同 右下x。
+E_異常検知帯,ROI2_右帯,y2,630,,y(px),同 右下y。
+F_基準解像度,BASE_RESOLUTION,width,1280,,px,計測の基準解像度 幅(維持なら変更不要)。
+F_基準解像度,BASE_RESOLUTION,height,720,,px,同 高さ。

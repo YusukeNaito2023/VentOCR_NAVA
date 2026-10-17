@@ -3,7 +3,11 @@
     "skip_keys": [],
     "similarity_thresh": 0.9,
     "sampling_size": 10,
-    "use_gpu": true
+    "use_gpu": true,
+    "diff_gating": true,
+    "diff_thresh": 2.0,
+    "diff_thresh_cdyn": 0.5,
+    "recognize_conf_fallback": 0.5
   },
   "post_ocr": {
     "imputation_col": [
@@ -11,6 +15,11 @@
       "EdiPeak"
     ],
     "smoothing": false,
-    "imputation": false
+    "imputation": false,
+    "abnormal_workers": 8,
+    "scale": {
+      "enabled": true
+    },
+    "detect_sweep_line": false
   }
 }
