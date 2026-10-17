@@ -1,10 +1,10 @@
 {
-  "engine_key": "nava_ventocr_v1_2",
-  "display_name": "NAVA v1.2",
+  "engine_key": "nava_ventocr_v1_3",
+  "display_name": "NAVA v1.3",
   "developer": "VentOCR Developer Team",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "ventocr_min": "0.5.5",
-  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720). v1.2: HSV hue-based waveform matching for robust detection of steep pressure rises on downscaled/high-resolution recordings.",
+  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720). v1.3: waveform points are chosen from the vertical extent of the trace in each column (globally optimal path with peak/valley tips preserved), removing false spikes at steep transitions; Flow scale fit excludes steep segments.",
 
   "sample_video": "Sample_NAVA_VentOCR.mp4",
   "base_resolution": "1280x720",

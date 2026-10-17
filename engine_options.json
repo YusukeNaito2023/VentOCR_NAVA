@@ -20,6 +20,7 @@
     "scale": {
       "enabled": true
     },
+    "trim_to_breath": true,
     "detect_sweep_line": false
   }
 }

@@ -13,7 +13,7 @@ from . import ExtractWaves as ew
 from pathlib import Path
 import threading
 
-ENGINE_VERSION = "1.1.0"
+ENGINE_VERSION = "1.3.0"
 VENTOCR_TESTED = "0.5.5"
 
 

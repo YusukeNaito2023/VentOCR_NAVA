@@ -39,6 +39,11 @@ ENGINE_SETTINGS_SCHEMA = {
             "default": False,
             "label": "Apply Interpolation"
         },
+        "trim_to_breath": {
+            "type": "bool",
+            "default": True,
+            "label": "Trim Waveform to Breath (inspiration onset)"
+        },
         "detect_sweep_line": {
             "type": "bool",
             "default": False,
