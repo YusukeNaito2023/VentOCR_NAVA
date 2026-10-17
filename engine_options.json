@@ -1,0 +1,16 @@
+{
+  "initial_ocr": {
+    "skip_keys": [],
+    "similarity_thresh": 0.9,
+    "sampling_size": 10,
+    "use_gpu": true
+  },
+  "post_ocr": {
+    "imputation_col": [
+      "VTe",
+      "EdiPeak"
+    ],
+    "smoothing": false,
+    "imputation": false
+  }
+}

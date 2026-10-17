@@ -1,0 +1,12 @@
+# 作業ファイル・サンプル動画はリポジトリに入れない（VentOCR の ENGINE_API.md §1）
+__pycache__/
+*.pyc
+.DS_Store
+._*
+temp/
+_runtime_models/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.code-workspace
