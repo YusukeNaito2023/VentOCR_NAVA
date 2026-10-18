@@ -16,7 +16,6 @@
     ],
     "smoothing": false,
     "imputation": false,
-    "abnormal_workers": 8,
     "scale": {
       "enabled": true
     },

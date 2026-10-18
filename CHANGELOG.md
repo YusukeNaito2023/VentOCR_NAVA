@@ -1,5 +1,41 @@
 # CHANGELOG
 
+## 1.4.0 (2026-10-18)
+v1.3 を複製して作成（エンジンキー `nava_ventocr_v1_4`）。解析の高速化のため、後処理で全フレームの JPEG を読むのをやめた。
+`manifest.json` の `engine_api` を 3 に（VentOCR 0.5.0 から。アプリは全フレームの画像を保存せず、エンジンが開いたフレームだけを作る。
+ENGINE_API.md §5.1）。波形の抽出のしかたは v1.3 と同じ。
+
+### 異常フレーム（ポップアップなど）の判定を initial_ocr へ
+- v1.3 までは post_ocr の `DetectAbnormalFrames` が全フレームの JPEG を読み直していた（サンプル 1205 フレームで全部。1 時間の動画で 36,000 枚）
+- v1.4 は initial_ocr の中で、メモリにあるフレームで判定する（`ExtractWaves.AbnormalFrameDetector`）。Frames.csv の列
+  `Abnormal` / `MeanDiff` / `StdDiff` / `HistCorr` は v1.3 と同じ
+- 判定の範囲（`ROI_LIST_Abnormal_Detection`）と閾値は v1.3 と同じ。基準は「動画の先頭の黒でないフレーム1枚」から
+  「区間（initial_ocr の単位）の黒でないフレームの画素ごとの中央値」に（区間ごとに動くため。区間の先頭がポップアップでも崩れない）。
+  区間がすべて黒画面なら、その区間は Abnormal
+- `DetectAbnormalFrames` と `post_ocr.abnormal_workers` は削除（古い設定に残っていても無視する）
+
+### 波形を書き出さない呼吸
+- v1.3: 呼吸の中に1枚でも Abnormal があれば書き出さなかった
+- v1.4: 波形を読む開始画像・終了画像が Abnormal のときだけ書き出さない（BreathCSV_Report.csv の Details は `start=0, end=1` など）。
+  呼吸の途中のポップアップは問わない（終了画像から波形が読めればよい。Hamilton と同じ考え方）
+
+### フレームの画像の読み方（engine_api 3）
+- 読むのは呼吸ごとに開始・終了画像とそれぞれの直前の画像（掃引の位置の検出）の4枚だけ。`cv2.imread` にパスを渡して読む
+- 画像があるかの確認は `os.path.exists` → `os.path.isfile`
+- BreathsToCSVs の間は直近 8 枚の画像を覚えておき、同じ画像を読み直さない（終了画像は3回読んでいた）
+- 診断用の `detect_sweep_line`（既定 OFF）は、ON にすると今までどおり全フレームを読んで書き換える
+
+### フレームレート（engine_api 2）
+- 決め打ちのフレーム数を秒から `GS.FPS` で求める（10 fps では v1.3 と同じ）: 開始画像は区切りの 0.6 秒前（6 フレーム）、
+  短い呼吸の統合は 0.5 秒以下（5 フレーム）、IE 比の判定で呼吸の先頭・末尾の 0.3 秒（3 フレーム）を除く
+
+### 確認
+- サンプル（nava_ventocr_v1_2_sample.mp4、10 fps・1205 フレーム）: Breaths.csv・Frames.csv（判定の数値の列以外）・波形 CSV 45 本が
+  v1.3 と一致。開いたフレームの画像は 1205 枚 → 180 枚（延べ 180 回）
+- 同じ動画を 20 fps: 45 呼吸、値・呼吸の長さは 10 fps と同じ
+- ポップアップを合成した動画（呼吸 10 の途中に 1 秒、呼吸 20 の終了画像に 0.6 秒）: Abnormal のフレームは v1.3 と同じ 16 枚。
+  v1.3 は呼吸 10・20・21 を書き出さなかったが、v1.4 は呼吸 20 だけ。呼吸 10・21 の波形はポップアップの無い解析と一致
+
 ## 1.3.0 (2026-10-11)
 v1.2 を複製して作成（端末版）。変更は `ExtractWaves.py` と、core.py の `ENGINE_VERSION`（v1.2 でも "1.1.0" のままだった）→ "1.3.0"。
 

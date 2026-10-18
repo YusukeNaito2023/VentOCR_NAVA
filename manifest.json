@@ -1,10 +1,11 @@
 {
-  "engine_key": "nava_ventocr_v1_3",
-  "display_name": "NAVA v1.3",
+  "engine_key": "nava_ventocr_v1_4",
+  "display_name": "NAVA v1.4",
   "developer": "VentOCR Developer Team",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "ventocr_min": "0.5.5",
-  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720). v1.3: waveform points are chosen from the vertical extent of the trace in each column (globally optimal path with peak/valley tips preserved), removing false spikes at steep transitions; Flow scale fit excludes steep segments.",
+  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720). v1.3: waveform points are chosen from the vertical extent of the trace in each column (globally optimal path with peak/valley tips preserved), removing false spikes at steep transitions; Flow scale fit excludes steep segments. v1.4: abnormal frames (pop-ups) are detected in initial_ocr from in-memory frames (Frames.csv column Abnormal); post-processing reads only the frames used for waveform extraction (engine_api 3); frame counts follow GS.FPS (engine_api 2).",
+  "engine_api": 3,
 
   "sample_video": "Sample_NAVA_VentOCR.mp4",
   "base_resolution": "1280x720",
@@ -12,7 +13,7 @@
 
   "has_extract_waves": false,
   "output_columns": {
-    "frames": ["Frame", "VTi", "VTe", "Cdyn", "Triggered", "BreathMark", "Ppeak"],
+    "frames": ["Frame", "VTi", "VTe", "Cdyn", "Triggered", "BreathMark", "Ppeak", "Abnormal"],
     "breaths": ["BreathNumber", "Cdyn", "VTe", "Real_VTe", "Real_Ppeak", "Real_VTi"]
   },
 

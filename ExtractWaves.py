@@ -31,27 +31,40 @@ def _report_progress(user_id, analyze_id, *, message, current, total):
 
 def _load_frame(path):
     """フレーム画像を読み込み、基準解像度(Settings.BASE_RESOLUTION)へ正規化する。
-    解像度非依存化のため、ROI/Y_RANGES定義の基準解像度に全フレームを揃える。"""
+    解像度非依存化のため、ROI/Y_RANGES定義の基準解像度に全フレームを揃える。
+    v1.4: アプリがフレームの画像をその場で作る（manifest の frame_images: on_demand）ので、必ず cv2.imread にパスを渡して読む。
+    BreathsToCSVs の間は同じ画像（終了画像は3回読む）を読み直さないよう、直近の数枚を覚えておく。"""
+    if _frame_cache is not None and path in _frame_cache:
+        _frame_cache.move_to_end(path)
+        return _frame_cache[path].copy()
     img = cv2.imread(path)
     if img is None:
         return None
     if (img.shape[1], img.shape[0]) != Settings.BASE_RESOLUTION:
         interp = cv2.INTER_AREA if img.shape[1] > Settings.BASE_RESOLUTION[0] else cv2.INTER_LINEAR
         img = cv2.resize(img, Settings.BASE_RESOLUTION, interpolation=interp)
+    if _frame_cache is not None:
+        _frame_cache[path] = img.copy()
+        while len(_frame_cache) > FRAME_CACHE_SIZE:
+            _frame_cache.popitem(last=False)
     return img
+
+
+START_BACK_SEC = 0.6   # 開始画像は呼吸の区切りのこの秒数前（v1.3 までは 6 フレーム決め打ち）
+FRAME_CACHE_SIZE = 8   # 1呼吸で読む画像は開始・終了とそれぞれの直前の4枚
+_frame_cache = None    # BreathsToCSVs の間だけ OrderedDict（path -> 基準解像度の画像）
 
 # --- 欠損値補完とスムージングを行うかどうか ---
 
 TRIM_TO_BREATH = True  # v1.3: 波形を呼吸の範囲（吸気の始まり〜次の吸気の始まり）に切り詰める
 SMOOTHING = False   # v1.3: 平滑化が実際に効くようになったので既定を OFF に（engine_options.json も OFF）
 IMPUTATION = True
-ABNORMAL_WORKERS = 8  # DetectAbnormalFramesのフレーム並列読込スレッド数（imreadがI/O律速のため）
+# v1.4: abnormal_workers（DetectAbnormalFrames の並列読み込み）は廃止。古い設定に残っていても無視する
 
 def set_config(settings):
-    global SMOOTHING, IMPUTATION, ABNORMAL_WORKERS, TRIM_TO_BREATH
+    global SMOOTHING, IMPUTATION, TRIM_TO_BREATH
     SMOOTHING = settings.get("post_ocr", {}).get("smoothing", False)
     IMPUTATION = settings.get("post_ocr", {}).get("imputation", True)
-    ABNORMAL_WORKERS = settings.get("post_ocr", {}).get("abnormal_workers", 8)
     TRIM_TO_BREATH = settings.get("post_ocr", {}).get("trim_to_breath", True)
 
 # --- 色と位置の定義 ---
@@ -1023,7 +1036,7 @@ def AllWaveformTocsv(waves_csv="./outputs/FinalBreath.csv", frames_root="./frame
             continue
         img_start = os.path.join(folder_path, f"frame_{start:08d}.jpg")
         img_end = os.path.join(folder_path, f"frame_{end:08d}.jpg")
-        if not (os.path.exists(img_start) and os.path.exists(img_end)):
+        if not (os.path.isfile(img_start) and os.path.isfile(img_end)):
             continue
         regions = get_difference_regions(img_end, img_start)
         if not regions:
@@ -1046,7 +1059,18 @@ def AllWaveformTocsv(waves_csv="./outputs/FinalBreath.csv", frames_root="./frame
     out_df.to_csv(os.path.join(output_dir, "Waves.csv"), index=False)
     print("Waves.csv generated.")
 
-def BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=False, report_path=None, analyze_id=None, reader=None, settings=None):
+def BreathsToCSVs(*args, **kwargs):
+    """_BreathsToCSVs を、フレームの画像を覚えておく（_frame_cache）状態で呼ぶ。"""
+    global _frame_cache
+    from collections import OrderedDict
+    _frame_cache = OrderedDict()
+    try:
+        return _BreathsToCSVs(*args, **kwargs)
+    finally:
+        _frame_cache = None
+
+
+def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=False, report_path=None, analyze_id=None, reader=None, settings=None):
     """
     各呼吸エピソードの Start/End 区間から差分領域を抽出し、波形（Pressure, Flow, Volume, Edi）を生成。
     {BreathNumber}.csv を出力し、加工後の breaths を返す。
@@ -1069,6 +1093,10 @@ def BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=F
     # frameのmin/maxを取得しておき、この範囲でのみframes_idx_iframeなどにアクセス
     frames_idx_iframe = frames.set_index("Frame")["iFrame"]
     frames_idx_src    = frames.set_index("Frame")["source_file"]
+    # v1.4: Abnormal は initial_ocr が付ける（列が無ければ異常なしとみなす）
+    frames_idx_abn = (pd.to_numeric(frames["Abnormal"], errors="coerce").fillna(0).astype(int)
+                      if "Abnormal" in frames else pd.Series(0, index=frames.index))
+    frames_idx_abn.index = frames["Frame"]
     frame_min = int(frames["Frame"].min())
     frame_max = int(frames["Frame"].max())
 
@@ -1095,7 +1123,8 @@ def BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=F
     base_frame = pd.to_numeric(breaths["Frame"], errors="coerce")
 
     # base_frameにNanなどが混入していた場合はframe_minで置き換え、astypeで小数を整数に（17.0->17）、Clipで範囲外（例：baseframeが3で-6したら-3）の場合、frame_minに置き換え
-    adjusted_frame_start = (base_frame - 6).fillna(frame_min).astype(int).clip(frame_min, frame_max)
+    start_back = max(1, round(START_BACK_SEC * GS.FPS))   # v1.4: 10 fps で v1.3 と同じ 6 フレーム
+    adjusted_frame_start = (base_frame - start_back).fillna(frame_min).astype(int).clip(frame_min, frame_max)
     breaths["_Start_Frame"] = adjusted_frame_start   # v1.3: 波形の時刻（Wave_T0）を求めるため。最後に消す
 
 
@@ -1117,6 +1146,7 @@ def BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=F
     adjusted_frame_end = pd.to_numeric(breaths["End_Frame"], errors="coerce").fillna(frame_max).astype(int)
     adjusted_frame_end = adjusted_frame_end.clip(frame_min, frame_max)
 
+    breaths["_End_Frame"] = adjusted_frame_end   # v1.4: 終了画像が Abnormal かを見るため。最後に消す
     breaths["End_File"] = adjusted_frame_end.map(frames_idx_iframe)
     breaths["End_Folder"] = (
         adjusted_frame_end.map(frames_idx_src)
@@ -1187,24 +1217,26 @@ def BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=F
             })
             continue
 
-        # 一個でもAbnormal判定がついていればエラー
-        filtered["Abnormal"] = pd.to_numeric(filtered["Abnormal"], errors="coerce")
-        label_sum = int(filtered["Abnormal"].sum()) if not filtered["Abnormal"].isna().all() else 0
-        if label_sum > 0:
+        # v1.4: 波形を読む開始・終了画像が Abnormal（ポップアップなど）なら書き出さない。
+        # 呼吸の途中の Abnormal は問わない（終了画像から波形が読めればよい。Hamilton と同じ考え方）。
+        # v1.3 までは呼吸の中に1枚でも Abnormal があれば書き出さなかった
+        abn_start = int(frames_idx_abn.get(int(row["_Start_Frame"]), 0))
+        abn_end = int(frames_idx_abn.get(int(row["_End_Frame"]), 0))
+        if abn_start or abn_end:
             skip_logs.append({
                 "BreathNumber": breath_num, "Status": "SKIPPED",
-                "Reason": "abnormal frames", "Details": f"sum={label_sum}",
+                "Reason": "abnormal frames", "Details": f"start={abn_start}, end={abn_end}",
             })
             continue
 
         # 画像存在チェック
         img_start = str(row["Start_File_Name"])
         img_end   = str(row["End_File_Name"])
-        if not (os.path.exists(img_start) and os.path.exists(img_end)):
+        if not (os.path.isfile(img_start) and os.path.isfile(img_end)):
             skip_logs.append({
                 "BreathNumber": breath_num, "Status": "SKIPPED",
                 "Reason": "image not found",
-                "Details": f"start={os.path.exists(img_start)}, end={os.path.exists(img_end)}",
+                "Details": f"start={os.path.isfile(img_start)}, end={os.path.isfile(img_end)}",
             })
             continue
 
@@ -1223,7 +1255,7 @@ def BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=F
         cursor_x = None
         before_path = os.path.join(os.path.dirname(img_end),
                                    f"frame_{end_iframe - 1:08d}.jpg")
-        if end_iframe - 1 >= 0 and os.path.exists(before_path):
+        if end_iframe - 1 >= 0 and os.path.isfile(before_path):
             cursor_x = _detect_sweep_cursor(img_end, before_path)
             regions = _trim_regions_right_of_cursor(regions, cursor_x)
 
@@ -1233,7 +1265,7 @@ def BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=F
         cursor_x_start = None
         before_start = os.path.join(os.path.dirname(img_start),
                                     f"frame_{start_iframe - 1:08d}.jpg")
-        if start_iframe - 1 >= 0 and os.path.exists(before_start):
+        if start_iframe - 1 >= 0 and os.path.isfile(before_start):
             cursor_x_start = _detect_sweep_cursor(img_start, before_start)
 
         # 診断用: 抽出領域の左右端x と 開始/終端フレームの検出カーソルx を記録（Breaths.csvへ出力）
@@ -1373,7 +1405,7 @@ def BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=F
     breaths["Wave_Rate"] = breaths["BreathNumber"].map(lambda b: _wt(b, 1))
     breaths["Wave_Trim_Head"] = breaths["BreathNumber"].map(lambda b: _wt(b, 2))
     breaths["Wave_Trim_Tail"] = breaths["BreathNumber"].map(lambda b: _wt(b, 3))
-    breaths = breaths.drop(columns=["_Start_Frame"])
+    breaths = breaths.drop(columns=["_Start_Frame", "_End_Frame"])
 
     # ---- レポート出力 ----
     report_df = pd.DataFrame(skip_logs).sort_values("BreathNumber")
@@ -1402,7 +1434,7 @@ def re_extract_breath_waveform(img_start_path, img_end_path, end_iframe, scale=N
     -------
     pandas.DataFrame | None   列=[X, Pressure, Flow, Volume, Edi]。再抽出不能なら None。
     """
-    if not (os.path.exists(img_start_path) and os.path.exists(img_end_path)):
+    if not (os.path.isfile(img_start_path) and os.path.isfile(img_end_path)):
         return None
 
     # 差分領域抽出
@@ -1413,7 +1445,7 @@ def re_extract_breath_waveform(img_start_path, img_end_path, end_iframe, scale=N
     # 終端カーソル右側の前掃引残像をトリム（直前フレームとの差分で先端を検出）
     before_path = os.path.join(os.path.dirname(img_end_path),
                                f"frame_{int(end_iframe) - 1:08d}.jpg")
-    if int(end_iframe) - 1 >= 0 and os.path.exists(before_path):
+    if int(end_iframe) - 1 >= 0 and os.path.isfile(before_path):
         cursor_x = _detect_sweep_cursor(img_end_path, before_path)
         regions = _trim_regions_right_of_cursor(regions, cursor_x)
 
@@ -1500,153 +1532,66 @@ def PlotWave(waveforms, x_vals=None, reference_waveforms=None):
     plt.show()
 
 
-def DetectAbnormalFrames(user_id,df_frames,analyze_id=None):
+class AbnormalFrameDetector:
+    """v1.4: 異常フレーム（ポップアップなど）の判定を initial_ocr の中で、メモリにあるフレームで行う。
 
-    """
-    与えられたフレーム情報（df_frames）に基づいて、正常基準画像との比較により各フレームが異常かどうかを判定する。
+    v1.3 までは後処理の DetectAbnormalFrames が全フレームの JPEG を読み直していた（1時間の動画で 36,000 枚）。
+    判定の中身（ROI_LIST_Abnormal_Detection の範囲を基準と比べ、平均差・標準偏差の差・ヒストグラム相関の
+    どれかが閾値を超えたら異常）と閾値は v1.3 と同じ。
 
-    各フレーム画像について、設定されたROI領域を対象に、
-    - 輝度差（平均差）
-    - 標準偏差差
-    - ヒストグラム相関
+    基準: v1.3 は動画の先頭の「黒でない」フレーム1枚だった。initial_ocr は区間（既定 60 秒）ごとに動くので、
+    区間の黒でないフレームの画素ごとの中央値にする（区間の先頭がポップアップでも基準が崩れないように）。
 
-    を評価し、いずれかの閾値を超える場合には異常（"1"）と判定する。
-    結果は df_frames の "Abnormal" 列に "0" または "1" を追加して返される。
-
-    Parameters:
-        user_id (str): 対象ユーザーのID。フレーム画像ディレクトリ取得に使用。
-        df_frames (pd.DataFrame): iFrame列とsource_file列を含むDataFrame。各行が1フレームに対応。
-
-    Returns:
-        pd.DataFrame: "Abnormal" 列を追加した df_frames。
-    
-    Raises:
-        FileNotFoundError: 正常基準画像 normal.jpg が存在しない場合に発生。
-
-    Notes:
-        - フレーム画像は Global_Setting.GS.Dir_Frames(user_id) 配下にあると仮定する。
-        - 使用するROIやしきい値は Settings.ROI_LIST_Abnormal_Detection および固定変数で定義される。
-
-    Tests:
-        - ✅ Unit Test (abnormal_test_env)
-        - ✅ Integration Test (test_detect_abnormal_with_real_images(real_image_test_env))
-        - ✅ Validation (validate_roi_difference.py)
+    使い方: add(フレーム) を initial_ocr の行と同じ順に呼び、最後に results() で
+    [(Abnormal, MeanDiff, StdDiff, HistCorr), ...] を受け取る。
     """
 
-
-
-    
-    # 正常基準画像（比較対象）
-
-    # 実行中スクリプトと同じディレクトリの絶対パスを取得
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-
-
-    base_frame_dir = GS.Dir_Frames(user_id)
-
-    # 正常基準フレームの自動選定:
-    # 動画冒頭は黒画面/フェードインの場合があり frame_00000000 を固定で使えない。
-    # また異常検知は「同一動画の正常フレーム」を基準にする必要があるため、
-    # 対象動画の先頭から走査して最初の「黒でない」フレームを正常基準として採用する。
-    # （_load_frame で基準解像度に正規化されるため解像度非依存）
-    def _find_reference_frame():
-        for _, r in df_frames.iterrows():
-            sub = str(r["source_file"]).replace("output_", "").replace(".csv", "")
-            cand = os.path.join(base_frame_dir, sub,
-                                "frame_" + str(int(r["iFrame"])).zfill(8) + ".jpg")
-            im = _load_frame(cand)
-            if im is not None and im.mean() > 20:  # 黒画面(mean≈0)を除外
-                return im
-        return None
-
-
-    # ROIの座標
-    ROI_LIST_Abnormal_Detection = Settings.ROI_LIST_Abnormal_Detection
-
-    # 各種閾値（チューニング可能）
-    THRESH_MEAN = 30        # 平均差の閾値（大きいと異常）
+    THRESH_MEAN = 30         # 平均差の閾値（大きいと異常）
     THRESH_STD = 10          # 標準偏差の差（大きいと異常）
     THRESH_HIST_CORR = 0.90  # ヒストグラム相関（小さいと異常）
+    BLACK_MEAN = 20          # 画面全体の平均がこれ以下のフレームは黒画面（基準に使わない）
+    MAX_REF_FRAMES = 200     # 基準の中央値に使うフレームの数の上限（等間隔に間引く）
 
+    def __init__(self, roi_list=None):
+        self.roi_list = list(roi_list or Settings.ROI_LIST_Abnormal_Detection)
+        self.strips = []     # フレームごと: [ROIごとのグレースケール画像]
+        self.black = []      # フレームごと: 黒画面か
 
+    def add(self, bgr):
+        """基準解像度（Settings.BASE_RESOLUTION）に揃えたカラーフレームを1枚加える。"""
+        self.strips.append([cv2.cvtColor(bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+                            for (x1, y1, x2, y2) in self.roi_list])
+        self.black.append(bool(bgr.mean() <= self.BLACK_MEAN))
 
-    # ヒストグラム生成関数
-    def compute_hist_corr(gray1, gray2):
-        hist1 = cv2.calcHist([gray1], [0], None, [64], [0, 256])
-        hist2 = cv2.calcHist([gray2], [0], None, [64], [0, 256])
-        hist1 = cv2.normalize(hist1, hist1).flatten()
-        hist2 = cv2.normalize(hist2, hist2).flatten()
-        return cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
+    @staticmethod
+    def _hist(gray):
+        h = cv2.calcHist([gray], [0], None, [64], [0, 256])
+        return cv2.normalize(h, h).flatten()
 
-    # 正常画像のROI処理
-    ref_img = _find_reference_frame()
-    if ref_img is None:
-        raise FileNotFoundError("正常基準フレームが見つかりません（全フレームが黒/読込不可）")
+    def results(self):
+        n = len(self.strips)
+        normal = [i for i in range(n) if not self.black[i]]
+        if not normal:
+            # 区間がすべて黒画面（または空）: 波形は読めないので異常にする
+            return [(1, 0.0, 0.0, 0.0)] * n
+        step = max(1, len(normal) // self.MAX_REF_FRAMES)
+        sample = normal[::step]
+        refs = [np.median(np.stack([self.strips[i][k] for i in sample]), axis=0).astype(np.uint8)
+                for k in range(len(self.roi_list))]
+        ref_stds = [np.std(r) for r in refs]
+        ref_hists = [self._hist(r) for r in refs]
 
-    ref_rois = []
-    ref_grays = []
-    ref_stds = []
-
-
-    for (x1, y1, x2, y2) in Settings.ROI_LIST_Abnormal_Detection:
-        roi = ref_img[y1:y2, x1:x2]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        ref_rois.append(roi)
-        ref_grays.append(gray)
-        ref_stds.append(np.std(gray))
-
-    # 異常検出処理
-    # imread(JPEGデコード)がI/O律速かつGILを解放するため、フレーム単位でスレッド並列化する。
-    # ROIの計算ロジックは直列版と完全に同一（結果一致を確認済み）。
-    df = df_frames
-    roi_list = Settings.ROI_LIST_Abnormal_Detection
-
-    # フレームパスをベクトル化して構築（iterrowsを回避）
-    subfolders = (df["source_file"].astype(str)
-                  .str.replace("output_", "", regex=False)
-                  .str.replace(".csv", "", regex=False))
-    names = ("frame_" + pd.to_numeric(df["iFrame"], errors="coerce")
-             .fillna(0).astype(int).astype(str).str.zfill(8) + ".jpg")
-    filepaths = (base_frame_dir + os.sep + subfolders + os.sep + names).tolist()
-
-    def _detect_one(filepath):
-        img = _load_frame(filepath)
-        if img is None:
-            print(f"⚠️ 画像読み込み失敗: {filepath}")
-            return ["0", 0.0, 0.0, 0.0]
-
-        abnormal = False
-        mean_diff = std_diff = hist_corr = 0.0
-        for i, (x1, y1, x2, y2) in enumerate(roi_list):
-            roi = img[y1:y2, x1:x2]
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-            mean_diff = np.mean(cv2.absdiff(ref_grays[i], gray))
-            std_diff = abs(np.std(gray) - ref_stds[i])
-            hist_corr = compute_hist_corr(ref_grays[i], gray)
-
-            if (mean_diff > THRESH_MEAN or
-                std_diff > THRESH_STD or
-                hist_corr < THRESH_HIST_CORR):
-                abnormal = True
-                break  # どちらかで異常なら早期終了
-
-        return ["1" if abnormal else "0", mean_diff, std_diff, hist_corr]
-
-    # ThreadPoolExecutor.map は入力順を保持するため df 行と整列する
-    from concurrent.futures import ThreadPoolExecutor
-    total = len(filepaths)
-    results = []
-    with ThreadPoolExecutor(max_workers=ABNORMAL_WORKERS) as executor:
-        for i, r in enumerate(tqdm(executor.map(_detect_one, filepaths),
-                                   total=total, desc="DetectAbnormalFrames"), 1):
-            results.append(r)
-            if i % 200 == 0 or i == total:
-                _report_progress(user_id, analyze_id,
-                                 message=f"Detecting abnormal frames ({i}/{total})",
-                                 current=i, total=total)
-
-    # 結果を保存（df.indexに整列）
-    df[["Abnormal", "MeanDiff", "StdDiff", "HistCorr"]] = pd.DataFrame(results, index=df.index)
-
-    return df
+        out = []
+        for grays in self.strips:
+            abnormal = 0
+            mean_diff = std_diff = hist_corr = 0.0
+            for k, gray in enumerate(grays):
+                mean_diff = float(np.mean(cv2.absdiff(refs[k], gray)))
+                std_diff = float(abs(np.std(gray) - ref_stds[k]))
+                hist_corr = float(cv2.compareHist(ref_hists[k], self._hist(gray), cv2.HISTCMP_CORREL))
+                if (mean_diff > self.THRESH_MEAN or std_diff > self.THRESH_STD
+                        or hist_corr < self.THRESH_HIST_CORR):
+                    abnormal = 1
+                    break  # どちらかで異常なら早期終了
+            out.append((abnormal, mean_diff, std_diff, hist_corr))
+        return out

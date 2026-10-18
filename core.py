@@ -13,7 +13,7 @@ from . import ExtractWaves as ew
 from pathlib import Path
 import threading
 
-ENGINE_VERSION = "1.3.0"
+ENGINE_VERSION = "1.4.0"
 VENTOCR_TESTED = "0.5.5"
 
 
@@ -183,6 +183,10 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     last_ocr_idx = {}    # key -> そのROIをOCRしたpending_frames index
     reuse_links = []     # (target_frame_rel, key, source_frame_rel)
 
+    # v1.4: 異常フレーム（ポップアップなど）はここで判定して Frames.csv の列にする。
+    # v1.3 までは post_ocr の DetectAbnormalFrames が全フレームの JPEG を読み直していた
+    abnormal_detector = ew.AbnormalFrameDetector()
+
     def _flush_batch():
         """Send accumulated ROIs to EasyOCR in one batch call, then dispatch results."""
         if not batch_rois:
@@ -262,6 +266,7 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
             frame_rel = len(pending_frames)
             extracted_values = {"_frame": frame_count}
             pending_frames.append(extracted_values)
+            abnormal_detector.add(color_frame)   # v1.4: 異常フレームの判定（Data と同じ順）
 
             for key, (x, y, w, h) in roi_items:
                 if key in skip_keys:
@@ -323,6 +328,9 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
 
     columns = ["Frame"] + column_order
     df = pd.DataFrame(Data, columns=columns)
+    df[["Abnormal", "MeanDiff", "StdDiff", "HistCorr"]] = pd.DataFrame(
+        abnormal_detector.results(), index=df.index,
+        columns=["Abnormal", "MeanDiff", "StdDiff", "HistCorr"])
     return df
 
         
@@ -360,8 +368,9 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
             df[key] = pd.to_numeric(df[key], errors="coerce")
             df[f"Real_{key}"] = Shift_Values(df, key)
 
-    # 1呼吸ごとのデータフレームも作成
+    # 1呼吸ごとのデータフレームも作成（v1.4: 異常判定の列は先頭フレームだけの値になるので Breaths.csv に入れない）
     df_breath = df.loc[df.groupby('BreathNumber')['Frame'].idxmin()]
+    df_breath = df_breath.drop(columns=["Abnormal", "MeanDiff", "StdDiff", "HistCorr"], errors="ignore")
 
 
     # Edi Peakの補完
@@ -394,13 +403,11 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     # １呼吸ごとの波形解析
     base_dir = os.path.join(".", user_ID)
 
-    # df_framesにAbnormal列をつけて返す
+    # v1.4: Abnormal 列は initial_ocr が付ける（全フレームの JPEG を読み直さない）
     df_frames = df
+    if "Abnormal" not in df_frames:
+        df_frames["Abnormal"] = 0
     ew.set_config(settings)
-    _pp(f"post_ocr: 異常フレーム検知中 ({len(df_frames)} frames)")
-    print(f"[post_ocr] DetectAbnormalFrames starting ({len(df_frames)} frames)...")
-    df_frames = ew.DetectAbnormalFrames(user_ID,df_frames,analyze_id=Analyze_Id)
-    print(f"[post_ocr] DetectAbnormalFrames done")
 
     df_breath.to_csv("breath.csv", index=False)
     df_frames.to_csv("frames.csv")
@@ -636,14 +643,22 @@ def _segment_by_cdyn(cdyn):
 
 def CreateBreathNumber(df,
                        IECutoff=0.5,
-                       ignore_first_m_within_breath=3,
-                       ignore_last_k_within_breath=3,
+                       ignore_first_m_within_breath=None,
+                       ignore_last_k_within_breath=None,
                        N_for_moving_avg=30,
                        long_ratio=1.5,
                        short_ratio=0.5,
                        ie_split_min_delta=0.15):
     import pandas as pd
     import numpy as np
+
+    # v1.4: フレーム数は秒から GS.FPS で求める（engine_api 2 以降。10 fps では v1.3 と同じ 3 / 3 / 5 フレーム）
+    fps = GS.FPS
+    if ignore_first_m_within_breath is None:
+        ignore_first_m_within_breath = max(1, round(0.3 * fps))
+    if ignore_last_k_within_breath is None:
+        ignore_last_k_within_breath = max(1, round(0.3 * fps))
+    short_frames = max(1, round(0.5 * fps))
 
     df = df.copy()
     df["IE_Ratio"] = pd.to_numeric(df.get("IE_Ratio", np.nan), errors="coerce")
@@ -653,9 +668,9 @@ def CreateBreathNumber(df,
     # ---- Step 1: Cdyn で大まかに分割 ----（連続NaN=***は1呼吸として束ねる）
     df["BreathNumber"] = _segment_by_cdyn(df["Cdyn"])
 
-    # ---- Step 1.5: 短い呼吸(<=5フレーム)を隣接に統合（既存：IEベースの判定）----
+    # ---- Step 1.5: 短い呼吸(<=0.5秒)を隣接に統合（既存：IEベースの判定）----
     counts = df.groupby("BreathNumber").size()
-    shorts = list(counts[counts <= 5].index)
+    shorts = list(counts[counts <= short_frames].index)
     for b in shorts:
         g = df[df["BreathNumber"] == b]
         if g.empty:

@@ -2,7 +2,15 @@
 
 ## Version
 
-1.3
+1.4
+
+### Changes in v1.4
+
+- 解析の高速化: 後処理で全フレームの JPEG を読むのをやめた（engine_api 3）。異常フレーム（ポップアップなど）は initial_ocr の中で
+  メモリにあるフレームで判定し、Frames.csv の `Abnormal` 列に記録する。
+- 波形を読む開始・終了画像が Abnormal の呼吸だけ波形を書き出さない（v1.3 までは呼吸の途中に1枚でもあれば書き出さなかった）。
+- 秒とフレーム数の換算に `GS.FPS` を使う（10 fps では v1.3 と同じ結果）。
+- 詳細は CHANGELOG.md
 
 ### Changes in v1.3
 
@@ -186,14 +194,16 @@ Real_VTe
 
 ---
 
-#### 4.1 DetectAbnormalFrames()
+#### 4.1 AbnormalFrameDetector（initial_ocr の中）
 
-- Detects noise / extreme values
-- Marks as:
+- 各フレームの `ROI_LIST_Abnormal_Detection` の範囲を、区間の黒でないフレームの中央値と比べる（平均差・標準偏差の差・ヒストグラム相関）
+- Frames.csv に記録:
 
 ```
-Abnormal = True
+Abnormal = 1
 ```
+
+- 波形を読む開始・終了画像が Abnormal の呼吸は波形を書き出さない
 
 ---
 
