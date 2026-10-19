@@ -1,8 +1,8 @@
 {
-  "engine_key": "nava_ventocr_v1_5",
-  "display_name": "NAVA v1.5",
+  "engine_key": "nava_ventocr",
+  "display_name": "NAVA",
   "developer": "VentOCR Developer Team",
-  "version": "1.5.0",
+  "version": "0.1.0",
   "ventocr_min": "0.5.5",
   "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720). v1.3: waveform points are chosen from the vertical extent of the trace in each column (globally optimal path with peak/valley tips preserved), removing false spikes at steep transitions; Flow scale fit excludes steep segments. v1.4: abnormal frames (pop-ups) are detected in initial_ocr from in-memory frames (Frames.csv column Abnormal); post-processing reads only the frames used for waveform extraction (engine_api 3); frame counts follow GS.FPS (engine_api 2). v1.5: faster (same results as v1.4): grayscale and downscale only the regions read, reuse the EasyOCR reader, open frame images in ascending order.",
   "engine_api": 3,
