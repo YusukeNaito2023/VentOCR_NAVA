@@ -1183,6 +1183,20 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     # Map失敗による削除があるので、次のiterrowの前にindexをリセット
     breaths = breaths.reset_index(drop=True)
 
+    # v1.5: 使う画像（開始・終了とそれぞれの直前）を先に、区間・フレーム番号の小さい順に開いておく。
+    # アプリ（engine_api 3）は開かれた画像を区間動画から作り、前へ進む読み方なら位置を指定し直さずに読み進められる。
+    # 下の処理は呼吸ごとに終了 → 開始の順（後ろへ戻る）に開くので、v1.4 はそのたびに区間動画のシークが起きていた
+    wanted = set()
+    for _, r in breaths.iterrows():
+        for folder_col, file_col in (("Start_Folder", "Start_File"), ("End_Folder", "End_File")):
+            try:
+                folder, iframe = str(r[folder_col]), int(r[file_col])
+            except (TypeError, ValueError):
+                continue
+            wanted.update((folder, i) for i in (iframe - 1, iframe) if i >= 0)
+    for folder, iframe in sorted(wanted):
+        os.path.isfile(f"{frames_root}/{folder}/frame_{iframe:08d}.jpg")
+
     # ---- 各呼吸を処理 ----
     _bt_total = len(breaths)
     for _bt_i, (_, row) in enumerate(tqdm(breaths.iterrows(), total=_bt_total), 1):

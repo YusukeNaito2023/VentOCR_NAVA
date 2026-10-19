@@ -13,8 +13,62 @@ from . import ExtractWaves as ew
 from pathlib import Path
 import threading
 
-ENGINE_VERSION = "1.4.0"
+ENGINE_VERSION = "1.5.0"
 VENTOCR_TESTED = "0.5.5"
+
+_GRAY_WEIGHTS = [0.114, 0.587, 0.299]   # v1.4 までの全画面のグレースケール化と同じ式（np.dot → uint8 に切り捨て）
+
+
+def _resize_period(src_wh, base_wh):
+    """縮小の周期（基準解像度の画素数）。1920→1280 は 3:2 なので 2。1〜16 で割り切れなければ None。"""
+    for p in range(1, 17):
+        if all((p * s) % b == 0 for s, b in zip(src_wh, base_wh)):
+            return p
+    return None
+
+
+class _BaseFrame:
+    """フレームを基準解像度（Settings.BASE_RESOLUTION）で見る。frame[y1:y2, x1:x2] でその範囲だけを返す。
+
+    v1.5: v1.4 までは全画面を基準解像度へ縮小していた（1920x1080 で 1 フレーム約 8 ms。区間の処理の約 4 割）。
+    縮小率が有理数なら、周期にそろえた範囲を INTER_AREA で縮小すると、全画面を縮小したときと同じ画素になる。
+    周期にそろえられないとき（拡大を含む）は、v1.4 と同じく全画面を一度だけ縮小する。"""
+
+    def __init__(self, src):
+        self.src = src
+        base_w, base_h = Settings.BASE_RESOLUTION
+        h, w = src.shape[:2]
+        self.full = src if (w, h) == (base_w, base_h) else None
+        self.period = _resize_period((w, h), (base_w, base_h)) if w > base_w else None
+        if self.full is None and self.period is None:
+            interp = cv2.INTER_AREA if w > base_w else cv2.INTER_LINEAR
+            self.full = cv2.resize(src, (base_w, base_h), interpolation=interp)
+        self.sx, self.sy = w / base_w, h / base_h
+
+    def mean(self):
+        """黒画面の判定用（縮小しても平均はほぼ変わらないので元の画像で求める）。"""
+        return float((self.full if self.full is not None else self.src).mean())
+
+    def __getitem__(self, sl):
+        if self.full is not None:
+            return self.full[sl]
+        ys, xs = sl
+        y, y2, x, x2, p = ys.start, ys.stop, xs.start, xs.stop, self.period
+        y0, x0 = y - y % p, x - x % p
+        y1, x1 = -(-y2 // p) * p, -(-x2 // p) * p
+        crop = self.src[round(y0 * self.sy):round(y1 * self.sy), round(x0 * self.sx):round(x1 * self.sx)]
+        out = cv2.resize(crop, (x1 - x0, y1 - y0), interpolation=cv2.INTER_AREA)
+        return out[y - y0:y2 - y0, x - x0:x2 - x0]
+
+
+class _GrayView:
+    """image[y1:y2, x1:x2] で、その範囲だけをグレースケールにする（v1.4 までは全画面を float64 で計算していた。1 フレーム約 8 ms）。"""
+
+    def __init__(self, frame):
+        self.frame = frame
+
+    def __getitem__(self, sl):
+        return np.dot(self.frame[sl][..., :3], _GRAY_WEIGHTS).astype(np.uint8)
 
 
 _EASYOCR_LOCKFILE = "easyocr_init.lock"
@@ -73,7 +127,19 @@ def _release_easyocr_file_lock(fd, lock_path: str):
         pass
 
 
+_READER_CACHE = {}  # v1.5: (gpu, モデルのフォルダ) -> Reader
+
+
 def _ensure_easyocr_reader_ready(gpu_enabled: bool):
+    """v1.5: 同じプロセス（アプリの並列のワーカー）では Reader を使い回す。
+    v1.4 までは区間ごとにモデルを読み直していた（1 回約 1.8 秒。1 時間の動画で 60 回）。"""
+    key = (bool(gpu_enabled), _get_easyocr_model_dir())
+    if key not in _READER_CACHE:
+        _READER_CACHE[key] = _create_easyocr_reader(gpu_enabled)
+    return _READER_CACHE[key]
+
+
+def _create_easyocr_reader(gpu_enabled: bool):
     model_dir = _get_easyocr_model_dir()
 
     # まず完成済みなら即使用
@@ -252,16 +318,10 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
 
         # カラーフレームジェネレータから順次受け取り、グレースケール変換
         for color_frame in frames:
-            # 解像度非依存化: ROI定義の基準解像度(Settings.BASE_RESOLUTION)に正規化する
-            if (color_frame.shape[1], color_frame.shape[0]) != Settings.BASE_RESOLUTION:
-                interp = cv2.INTER_AREA if color_frame.shape[1] > Settings.BASE_RESOLUTION[0] else cv2.INTER_LINEAR
-                color_frame = cv2.resize(color_frame, Settings.BASE_RESOLUTION, interpolation=interp)
-            image = np.dot(color_frame[..., :3], [0.114, 0.587, 0.299]).astype(np.uint8)
-            if image is None:
-                print(f"Error: Could not read image at frame {frame_count}, skipping...")
-                frame_count += 1
-                pbar.update(1)
-                continue
+            # 解像度非依存化: ROI定義の基準解像度(Settings.BASE_RESOLUTION)に正規化する。
+            # v1.5: 全画面は縮小せず、使う範囲だけを縮小・グレースケール化する（_BaseFrame。結果は全画面で計算したものと同じ）
+            color_frame = _BaseFrame(color_frame)
+            image = _GrayView(color_frame)
 
             frame_rel = len(pending_frames)
             extracted_values = {"_frame": frame_count}
