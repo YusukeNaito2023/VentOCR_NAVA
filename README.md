@@ -2,7 +2,7 @@
 
 ## Version
 
-0.1.0（旧 v1.5.0。CHANGELOG.md）
+0.1.1（CHANGELOG.md）
 
 ### Changes in v1.5
 

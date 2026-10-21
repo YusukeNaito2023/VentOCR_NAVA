@@ -1141,7 +1141,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     # 終了フレームの同定
     # End 側：次呼吸の Frame をそのまま使う（最終行は End が作れないため除去）
     breaths["End_Frame"] = breaths["Frame"].shift(-1)
-    breaths = breaths.drop(breaths.index[-1])
+    breaths = breaths.iloc[:-1]   # 0.1.1: 呼吸が無いときに drop(index[-1]) で落ちないように
 
     adjusted_frame_end = pd.to_numeric(breaths["End_Frame"], errors="coerce").fillna(frame_max).astype(int)
     adjusted_frame_end = adjusted_frame_end.clip(frame_min, frame_max)
@@ -1422,7 +1422,9 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     breaths = breaths.drop(columns=["_Start_Frame", "_End_Frame"])
 
     # ---- レポート出力 ----
-    report_df = pd.DataFrame(skip_logs).sort_values("BreathNumber")
+    # 0.1.1: 波形を書き出す候補の呼吸が無い（呼吸の区切りが2つ以下。合わない動画など）と skip_logs が空になり、
+    # 列の無い表を並べ替えて KeyError で解析が止まっていた。空でも列を持つ表にする
+    report_df = pd.DataFrame(skip_logs, columns=["BreathNumber", "Status", "Reason", "Details"]).sort_values("BreathNumber")
     report_df.to_csv(report_path, index=False)
 
     return len(summary_records), breaths
