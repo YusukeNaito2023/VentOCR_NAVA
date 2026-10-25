@@ -14,7 +14,7 @@ from . import sweep
 from pathlib import Path
 import threading
 
-ENGINE_VERSION = "0.1.2"
+ENGINE_VERSION = "0.2.0"
 VENTOCR_TESTED = "0.5.5"
 
 _GRAY_WEIGHTS = [0.114, 0.587, 0.299]   # Same formula as the full-frame grayscale conversion up to v1.4 (np.dot -> truncated to uint8)

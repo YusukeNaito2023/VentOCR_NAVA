@@ -1,5 +1,36 @@
 # CHANGELOG
 
+## 0.2.0 (unreleased)
+Results change (breath boundaries, waveforms, new columns). Same approach as the Hamilton engine.
+
+### Breath boundaries
+- A breath starts where the ventilator updates its per-breath displays: Cdyn or VTe shows a new value (or "***") for at least 0.3 s; updates within 0.5 s count as one boundary. The two displays change together at the start of each breath; VTe also splits breaths where Cdyn stays the same or shows "***".
+- Breaths are no longer merged or split (CreateBreathNumber Steps 1.5-3.5 were removed). Up to 0.1.x, Step 3 merged every breath whose Ti/Ttot (I:E as I/(I+E)) was 0.5 or more into the previous breath; on a one-hour Servo-U recording this merged 87 breaths that the ventilator had counted (inverse-ratio I:E such as "6.3 : 1"). Combining breaths is left to the combine_breaths module.
+- Alerts: Fragment (first / last breath, cut by the recording), Two_Breath (at least 1.5x the moving average of breath lengths), Short (at most half). They only flag breaths.
+
+### Waveforms (rebuilt from the last image)
+- initial_ocr records the pen tip of every frame (`sweep.SweepDetector`: a few rows of the Pressure / Flow / Volume bands compared with the previous frame; the newly drawn trace and the erase band about 38 px ahead give the tip). post_ocr tracks it at constant speed (`sweep.fit_sweep`) into an unwrapped position.
+- Each breath runs from its inspiration onset (found in Flow from 1.0 s before to 0.5 s after the display update) to the next breath's onset, and is read from one image: the last frame of the breath (a later frame if the next onset is still ahead of the pen). The Servo-U redraws the whole area at each wrap (scales may change), so one image has one scale. Breaths longer than one sweep keep only the part still on the screen (Alert Long).
+- Images are opened in ascending order first (no seeking in the app's segment video).
+- The white fallback of the trace detection skips the panel title rows and keeps every white run as a candidate. It used to take the topmost white pixel, which picked the title text above a white trigger mark and drew a spike.
+- Up to 0.1.x each breath used a start image and an end image (and the frame before each) and their difference.
+
+### Coordinates
+- Written in pixels of the analyzed video (frames of any size are read at 1280x720 internally): Frames.csv `Sweep_X` (pen tip on every frame) and the waveform rows (1 row = 1 column of the video; values read at 1280x720 are interpolated onto those columns), with `Wave_T0` / `Wave_Rate`. Breaths.csv no longer has X_Start / X_End / Sweep_Cursor_Start / Sweep_Cursor_End, which were in 1280x720 coordinates and made the app draw the sweep line at 2/3 of the true position on 1920x1080 videos.
+
+### Patient trigger
+- The Servo-U draws the triggering part of a trace in white. White pixels on the extracted trace (within 4 rows, excluding the panel title rows) from 10 columns before to 1.0 s after the onset, in the Pressure / Flow / Edi bands: Breaths.csv `Trigger` (A patient / C machine), `Trigger_Source` and the counts `Trig_White_P/F/E`.
+- The Triggered ROI (patient-trigger icon) is no longer OCRed: up to 0.1.x it was read with readtext every 10 frames, which never returned text (all NaN) and was not used.
+
+### Other
+- EdiPeak preprocessing runs only for ROIs that are OCRed (the diff gating compares the ROI before preprocessing).
+- Settings removed: similarity_thresh, sampling_size, detect_sweep_line.
+- Alert Abnormal: the image of the breath is a pop-up or another screen (no waveform).
+- manifest: Trigger / Trigger_Source in breath_values; the I:E value is labelled Ti/Ttot (it is I/(I+E), e.g. "1 : 2.3" -> 0.30).
+
+### Checks (so far)
+- Servo-U recording, first 3 minutes (1920x1080), against the ventilator's own export (Servo Tracker, Breath_*.csv; video time + 330.25 s = log time): 64 of 64 breaths have an exported breath within 0.5 s (median 0.09 s); 1 exported breath missing (the first, at 4.4 s). Trigger agrees for 64 of 64 (export Trig cause 4 = Pressure trigger, 2 = machine).
+
 ## 0.1.2 (2026-10-25)
 Analysis results are the same as 0.1.1. Added the output declaration `outputs` to manifest.json (VentOCR 0.6.2 and later; ENGINE_API.md §8.1; same structure as the Hamilton engine). `ventocr_min` is now 0.6.2.
 - waves: Pressure (label Paw, cmH2O), Flow (L/min), Volume (mL), Edi (µV). The y-axis uses the on-screen scale (P/F/V/E_min/max). Colors follow the app's common palette

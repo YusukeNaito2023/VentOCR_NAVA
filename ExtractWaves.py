@@ -2,7 +2,6 @@ import os
 import cv2
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 import Global_Setting as GS
 from . import Settings
@@ -177,7 +176,6 @@ ZERO_SEARCH = 4
 SCALE_SNAP = {"Pressure": 5, "Flow": 10, "Volume": 50}
 SNAP_TOLERANCE = 0.35       # breaths whose estimate differs from the rounded value by more than step×this are not used (ambiguous)
 SCALE_SMOOTH = 5            # remove outliers (e.g. two-stage inspiration) by the mode over this many neighboring breaths
-SWEEP_RATE_DEFAULT = 81.6   # sweep speed px/s (81.5-81.7 on 3 videos). Used when it cannot be derived from the sweep positions in start/end images
 # The scale derived from the Flow integral comes out about 5% smaller than actual.
 # v1.3: checked against on-screen ticks on 3 videos (261 breaths): 1.06 -> 1.05 (best match when estimating without steep segments)
 FLOW_GAIN = 1.05
@@ -365,11 +363,6 @@ def _edi_scale_from_peak(edi_peak, edi_pixels, min_peak_px=8):
     top, bot = Y_RANGES["Edi"]
     H = bot - top
     return {"min": 0, "max": round(ep * H / peak_px, 2), "unit": SCALE_UNITS["Edi"]}
-
-
-def _scale_frame_path(frames_root, source_file, iframe):
-    sub = str(source_file).replace("output_", "").replace(".csv", "")
-    return os.path.join(frames_root, sub, f"frame_{int(iframe):08d}.jpg")
 
 
 def _hue_circular_dist(hue_array, target_hue):
@@ -582,291 +575,6 @@ def _extract_waveform(img, target_bgr, max_dist=40, waveform_name=None, y_offset
         out[seg] = y
     return list(out)
 
-# --- Extract time-series data from the image ---
-def extract_waveform_timeseries(image_path, x_start=524, x_end=807):
-    globals()["x_start"] = x_start
-    img = _load_frame(image_path)
-    waveforms = {}
-    for name, (y1, y2) in Y_RANGES.items():
-        crop = img[y1:y2, x_start:x_end]
-        ts = _extract_waveform(crop, COLOR_DEFINITIONS[name], COLOR_TOLERANCE, waveform_name=name, y_offset=y1)
-        series = pd.Series(ts)
-        if IMPUTATION:
-            series = pd.Series(ts).interpolate(method='linear', limit_direction='both')
-        if SMOOTHING:
-            # Up to v1.2 the moving-average result was immediately overwritten, so smoothing had no effect (fixed in v1.3).
-            # Default is OFF. Turning it ON erodes V-shaped tips
-            series = series.rolling(window=10, center=True, min_periods=1).mean()
-        waveforms[name] = series.to_numpy()
-    return waveforms
-
-# --- Difference region detection ---
-import cv2
-import numpy as np
-
-def get_regions_for_y_range(img1, img2, y_start, y_end,
-                             x_start, x_end,
-                             diff_thresh=25, smooth_kernel=15, min_gap=30):
-    gray1 = cv2.cvtColor(img1[y_start:y_end, x_start:x_end], cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(img2[y_start:y_end, x_start:x_end], cv2.COLOR_BGR2GRAY)
-    diff = cv2.absdiff(gray1, gray2)
-    column_max_diff = np.max(diff, axis=0)
-    smoothed = np.convolve(column_max_diff, np.ones(smooth_kernel)/smooth_kernel, mode='same')
-    x_coords = np.where(smoothed > diff_thresh)[0]
-
-    if len(x_coords) == 0:
-        return []
-
-    regions = []
-    start = x_coords[0]
-    for i in range(1, len(x_coords)):
-        if x_coords[i] > x_coords[i - 1] + min_gap:
-            regions.append((start + x_start, x_coords[i - 1] + x_start))
-            start = x_coords[i]
-    regions.append((start + x_start, x_coords[-1] + x_start))
-    return regions
-
-
-def get_difference_regions(image_path1, image_path2):
-    x_start, x_end = 140, 893
-
-    # Y ranges (3 panels: Pressure/Flow/Volume). References Y_RANGES as the single source of truth
-    # (previously separate values were hardcoded here, a breeding ground for drift).
-    y_ranges = [Y_RANGES["Pressure"], Y_RANGES["Flow"], Y_RANGES["Volume"]]
-
-    # Load images
-    img1 = _load_frame(image_path1)
-    img2 = _load_frame(image_path2)
-
-    # Extract difference regions for each Y range
-    region_sets = []
-    for y_start, y_end in y_ranges:
-        regions = get_regions_for_y_range(img1, img2, y_start, y_end, x_start, x_end)
-        region_sets.append(regions)
-
-    # Prepare a bitmask to check overlap along the X axis
-    x_length = x_end + 1  # supports up to 893
-    mask = np.zeros(x_length, dtype=int)
-
-    # Count overlaps for each region set
-    for regions in region_sets:
-        temp = np.zeros(x_length, dtype=int)
-        for x1, x2 in regions:
-            temp[x1:x2 + 1] = 1
-        mask += temp
-
-    # Get X positions overlapped by 2 or more regions
-    overlap_coords = np.where(mask >= 2)[0]
-    if len(overlap_coords) == 0:
-        return []
-
-    # Convert X coordinates back to regions
-    merged = []
-    start = overlap_coords[0]
-    for i in range(1, len(overlap_coords)):
-        if overlap_coords[i] > overlap_coords[i - 1] + 1:
-            merged.append((start, overlap_coords[i - 1]))
-            start = overlap_coords[i]
-    merged.append((start, overlap_coords[-1]))
-
-    return merged
-
-
-# --- Concatenate waveforms of difference regions ---
-def merge_waveforms_across_regions(image_path, regions):
-    merged = {}
-    for x_start, x_end in sorted(regions, key=lambda r: -r[0]):
-        waveforms = extract_waveform_timeseries(image_path, x_start, x_end)
-        for key, values in waveforms.items():
-            merged.setdefault(key, []).extend(values)
-    return {k: np.array(v) for k, v in merged.items()}
-
-
-# --- Detect sweep cursor (tip) in the end frame ---
-# Added in v1.2:
-#     The start/end 2-frame diff, for long-interval breaths, picked up not only the current sweep but also the
-#     'old waveform (afterimage) of the previous sweep remaining to the right of the end cursor', looking like multiple waveforms.
-#     The diff band between the end frame and the frame just before it = sweep tip (cursor) position; columns to its right
-#     are previous-sweep afterimage, so return the reference x used to drop them from the extraction regions.
-def _sweep_cursor_from_imgs(img_e, img_b, x_lo=140, x_hi=893,
-                            diff_thresh=25, smooth_kernel=15,
-                            vote_panels=("Pressure", "Flow", "Volume"),
-                            min_vote=2, cluster_gap=10, wrap_width=250):
-    """Return sweep cursor x (= tip = right edge of new drawing) from 2 images (end / previous, both base resolution).
-    None if not detectable. Images are assumed already loaded via _load_frame (BASE_RESOLUTION).
-
-    The cursor is a vertical feature spanning all waveform panels, so in each Pressure/Flow/Volume panel
-    vote per column on whether the smoothed diff exceeds the threshold, and adopt only columns with >= min_vote(=2) votes
-    (same majority vote as get_difference_regions; Edi is excluded since its panel-specific marker corrupts single-panel results).
-    This allows full-width search up to x_hi without being fooled by the Edi marker or single-panel noise.
-    Adopted columns are clustered; if wide clusters (sweep wrap) exist, return the left edge of the rightmost wide cluster,
-    otherwise the right edge (= tip) of the rightmost cluster."""
-    if img_e is None or img_b is None:
-        return None
-    width = x_hi - x_lo
-    vote = np.zeros(width, dtype=np.int16)
-    kernel = np.ones(smooth_kernel) / smooth_kernel
-    for nm in vote_panels:
-        y0, y1 = Y_RANGES[nm]
-        g_e = cv2.cvtColor(img_e[y0:y1, x_lo:x_hi], cv2.COLOR_BGR2GRAY).astype(np.int16)
-        g_b = cv2.cvtColor(img_b[y0:y1, x_lo:x_hi], cv2.COLOR_BGR2GRAY).astype(np.int16)
-        col = np.max(np.abs(g_e - g_b), axis=0)
-        sm = np.convolve(col, kernel, mode='same')
-        vote += (sm > diff_thresh)
-    xs = np.where(vote >= min_vote)[0]
-    if len(xs) == 0:
-        return None
-    # Cluster adopted columns (columns within cluster_gap are grouped into one cluster)
-    runs = []
-    start = prev = xs[0]
-    for x in xs[1:]:
-        if x > prev + cluster_gap:
-            runs.append((start, prev))
-            start = x
-        prev = x
-    runs.append((start, prev))
-    # Sweep wrap: if a wide cluster exists, the left edge of the rightmost wide cluster = cursor
-    wide = [r for r in runs if (r[1] - r[0]) > wrap_width]
-    if wide:
-        return x_lo + int(wide[-1][0])
-    # Normal: right edge of the rightmost cluster = sweep tip
-    return x_lo + int(runs[-1][1])
-
-
-def _detect_sweep_cursor(path_end, path_before, x_lo=140, x_hi=893,
-                         diff_thresh=25, smooth_kernel=15):
-    """Return the end frame's sweep cursor x (= tip = rightmost newly drawn column). None if not detectable."""
-    return _sweep_cursor_from_imgs(
-        _load_frame(path_end), _load_frame(path_before),
-        x_lo=x_lo, x_hi=x_hi, diff_thresh=diff_thresh, smooth_kernel=smooth_kernel,
-    )
-
-
-def annotate_sweep_lines(df_frames, frames_root, line_bgr=(0, 0, 255), thickness=2):
-    """Draw the sweep cursor (Sweep Line) as a vertical line on each frame and overwrite the original frame image.
-    Detection runs at base resolution (BASE_RESOLUTION); drawing scales coordinates to the original-resolution frame
-    (keeps original resolution = consistent with Label's original-resolution download). Detects tip x from the diff with
-    the previous (unmodified) frame and draws a line spanning the waveform band (Pressure top to Edi bottom). Diagnostic for when the
-    Detect Sweep Line option (default OFF) is enabled. Undetectable frames are left unmarked. Returns the number of frames drawn."""
-    if df_frames is None or getattr(df_frames, "empty", True):
-        return 0
-    base_w, base_h = Settings.BASE_RESOLUTION
-    y0 = int(Y_RANGES["Pressure"][0])
-    y1 = int(Y_RANGES["Edi"][1])
-    ordered = df_frames.sort_values("Frame")
-    prev_norm = None   # base-resolution image of previous frame (detection only, unmodified)
-    drawn = 0
-    for _, fr in ordered.iterrows():
-        path = _scale_frame_path(frames_root, fr.get("source_file"), fr.get("iFrame"))
-        norm = _load_frame(path)               # base resolution (for detection)
-        if norm is None:
-            prev_norm = None
-            continue
-        cursor_x = _sweep_cursor_from_imgs(norm, prev_norm) if prev_norm is not None else None
-        prev_norm = norm                       # kept unmodified for next frame's detection (no line contamination)
-        if cursor_x is None:
-            continue
-        orig = cv2.imread(path)                # original resolution (draw and overwrite)
-        if orig is None:
-            continue
-        oh, ow = orig.shape[:2]
-        sx = ow / base_w
-        sy = oh / base_h
-        x = int(round(cursor_x * sx))
-        ya = int(round(y0 * sy))
-        yb = int(round(y1 * sy))
-        cv2.line(orig, (x, ya), (x, yb), line_bgr, max(1, int(round(thickness * sx))))
-        cv2.imwrite(path, orig)
-        drawn += 1
-    return drawn                  # tip = rightmost changed column
-
-
-def _trim_regions_right_of_cursor(regions, cursor_x, left_edge=160, right_edge=872):
-    """Drop regions right of the end cursor (= previous-sweep afterimage).
-    However, for a true wrap (separate regions at both left and right edges), the right side is this breath's genuine drawing,
-    so do not trim and defer to the existing processing."""
-    if cursor_x is None or not regions:
-        return regions
-    right_touch = any(r[1] >= right_edge for r in regions)
-    left_touch = any(r[0] <= left_edge for r in regions)
-    is_true_wrap = right_touch and left_touch and len(regions) >= 2
-    if is_true_wrap:
-        return regions
-    trimmed = [(xs, min(xe, cursor_x)) for xs, xe in regions if xs <= cursor_x]
-    return [(xs, xe) for xs, xe in trimmed if xe > xs]
-
-
-# --- Breath region reconstruction for sweep wrap ---
-# Added in v1.2:
-#     The diff picks up every X position where 'only one of the start/end frames has a waveform', so for breaths where the sweep
-#     advances more than one breath / wraps at the right edge, old afterimage fragments of other breaths got mixed in, and concatenation
-#     looked like two humps (plateaus).
-#     When a wrap is detected, adopt only 'right-edge region (drawn just before wrap) -> left-edge region (drawn just after wrap)'
-#     in time order and discard old afterimage fragments in between (non-wrap cases use all regions as before).
-def _select_breath_regions(regions, left_edge=160, right_edge=872):
-    if regions is None or len(regions) <= 1:
-        return regions
-    right = [r for r in regions if r[1] >= right_edge]   # regions touching the right edge of the screen
-    left  = [r for r in regions if r[0] <= left_edge]    # regions touching the left edge of the screen
-    if right and left:
-        # Wrap detected: adopt only right-edge -> left-edge breath fragments, discard afterimages in between
-        sel = sorted(right, key=lambda r: r[0]) + sorted(left, key=lambda r: r[0])
-        seen, out = set(), []
-        for r in sel:
-            key = (int(r[0]), int(r[1]))
-            if key not in seen:
-                seen.add(key)
-                out.append(r)
-        return out
-    # Non-wrap: as before (diff is local, afterimage contamination unlikely)
-    return regions
-
-
-# --- Trim the 'next breath rise' mixed in at the end ---
-# Added in v1.2:
-#     On wrap, the left-edge region's diff can extend to the start of the next breath's inspiratory rise,
-#     leaving a small part of the next breath's rise at the end of the reconstructed waveform. In the Pressure waveform, detect the point
-#     where it 'returns to baseline once and then rises again (= next breath's inspiration)' and cut all waveforms from there on.
-#     A breath is normally baseline -> inspiration -> plateau -> expiration -> baseline with no second rise,
-#     so trim conservatively only when a second rise is detected.
-def _trim_trailing_breath(waveforms, ref="Pressure"):
-    P = waveforms.get(ref)
-    if P is None:
-        return waveforms
-    P = np.asarray(P, dtype=float)
-    n = len(P)
-    if n < 60:
-        return waveforms
-    s = pd.Series(P).interpolate(method="linear", limit_direction="both").to_numpy()
-    if np.isnan(s).all():
-        return waveforms
-    base = np.nanpercentile(s, 20)
-    peak = np.nanpercentile(s, 90)
-    amp = peak - base
-    if amp < 15:  # small amplitude (flat/missing) -> undeterminable, do not trim
-        return waveforms
-    hi = base + 0.60 * amp
-    lo = base + 0.30 * amp
-    above = s > hi
-    if not above.any():
-        return waveforms
-    first_up = int(np.argmax(above))                       # first inspiration
-    after = np.where(s[first_up:] < lo)[0]                  # then returns near baseline
-    if len(after) == 0:
-        return waveforms
-    back = first_up + int(after[0])
-    nxt = np.where(s[back:] > hi)[0]                        # rises again (next breath's inspiration)
-    if len(nxt) == 0:
-        return waveforms
-    cut = back + int(nxt[0])
-    # Move back to the rise onset (last point near baseline just before cut) and cut there
-    pre = np.where(s[back:cut] <= lo)[0]
-    if len(pre) > 0:
-        cut = back + int(pre[-1]) + 1
-    # Guard against cutting too early (mistakenly cutting the main breath)
-    if cut < n * 0.5:
-        return waveforms
-    return {k: np.asarray(v)[:cut] for k, v in waveforms.items()}
 
 # --- Remove non-physiological V-shaped troughs (high->low->high) in Volume ---
 # Added in v1.2:
@@ -920,23 +628,16 @@ def _reject_volume_troughs(waveforms, name="Volume", win=20,
     return {**waveforms, name: s_out}
 
 
-# --- Trim to the breath span ---
-# Added in v1.3:
-#     The breath boundary (Cdyn display update) is slightly offset from inspiration start, so the start image is taken 0.6 s
-#     before the boundary (Frame-6) and the end image up to the next breath's boundary. As a result, the waveform CSV started with the
-#     previous breath's end of expiration (about 0.4-0.6 s) and ended with the next breath's inspiratory rise.
-#     Find Flow inspiratory rises; trim the head to the first inspiration start and the tail to the start of the 'last inspiration
-#     without expiration' (= the next breath's inspiration cut off midway). Additionally, cut the previous breath's tail at the
-#     inspiration start time found in the next breath (to also remove rises too short to be classified as inspiration on their own).
-#     Timing of the trimmed part is preserved via Breaths.csv Wave_T0 (time of first point, s) / Wave_Rate (px/s).
-#     Computation is just a 1-D scan of Flow per breath.
+# --- Inspiration onsets (breath span) ---
+# v1.3: a breath's waveform runs from its inspiration onset to the next breath's onset. The breath boundary (display
+# update) comes slightly after the onset, so the onset is searched in Flow around the boundary.
+# 0.2.0: the onsets directly set where each breath starts (see _BreathsToCSVs); timing is kept with Wave_T0 / Wave_Rate.
 ONSET_PX = 3        # Flow above baseline by more than this is inspiratory flow (px)
 ONSET_RUN = 5       # inspiratory flow must continue for at least this many columns
 ONSET_PEAK = 8      # that inspiration must reach at least this far above baseline (px)
 QUIET_RUN = 5       # before inspiration there must be at least this many non-inspiratory columns (excludes previous breath's inspiration remnant at the head)
 ONSET_FRAC = 0.2    # from the point exceeding this fraction of the inspiratory max, trace back to the foot of the rise
 EXP_PX = 3          # expiratory flow (at least this far below baseline, px)
-TRIM_LEAD = 3       # how many columns before inspiration start to keep
 
 
 def _inspiration_onsets(flow):
@@ -974,63 +675,6 @@ def _inspiration_onsets(flow):
     return out
 
 
-def _breath_trim_range(flow, valid_rows):
-    """Return the range of rows to keep (head, tail) and the first inspiration start (None if none).
-    valid_rows: rows where any waveform has a value (empty leading/trailing rows are also trimmed)."""
-    n = len(flow)
-    if valid_rows.any():
-        lo, hi = int(np.argmax(valid_rows)), n - int(np.argmax(valid_rows[::-1]))
-    else:
-        lo, hi = 0, n
-    onsets = _inspiration_onsets(flow)
-    if not onsets:
-        return lo, hi, None
-    head = max(lo, onsets[0] - TRIM_LEAD)
-    tail = hi
-    last = onsets[-1]
-    # No expiration after the last inspiration = next breath's inspiration is cut off and included (in a breath containing 2 breaths, keep the second)
-    if last != onsets[0] and not (np.nan_to_num(np.asarray(flow[last:], float)) < -EXP_PX).any():
-        tail = max(head + 1, min(hi, last - TRIM_LEAD))
-    return head, tail, onsets[0]
-
-
-def _first_sample_time(start_frame, x0, cursor_start, rate, offset):
-    """Time (s) of the first waveform point. Same method as the app's ResultPackage.sample_times:
-    back-calculated from the start image's pen tip (sweep position - erase band width offset). Breaths containing a wrap use the start image time."""
-    ts = float(start_frame) / GS.FPS
-    if cursor_start is not None and x0 is not None and 0 < cursor_start \
-            and 0 <= cursor_start - x0 <= max(200, 3 * offset):
-        return ts - (cursor_start - offset - x0) / rate
-    return ts
-
-
-def _trim_records_to_breaths(records, rate):
-    """Trim records (breaths in time order). Writes head / tail / wave_t0 into each rec."""
-    offsets = [r["cursor_start"] - r["x0"] for r in records
-               if r["cursor_start"] is not None and r["x0"] is not None and 0 <= r["cursor_start"] - r["x0"] <= 200]
-    offset = float(np.median(offsets)) if offsets else 0.0
-    for r in records:
-        flow = r["waves"]["Flow"] - r["zero"]["Flow"]
-        valid = np.isfinite(np.vstack([r["waves"][nm] for nm in ("Pressure", "Flow", "Volume", "Edi")])).any(axis=0)
-        r["t_first"] = _first_sample_time(r["start_frame"], r["x0"], r["cursor_start"], rate, offset)
-        if TRIM_TO_BREATH:
-            r["head"], r["tail"], onset = _breath_trim_range(flow, valid)
-        else:
-            r["head"], r["tail"], onset = 0, len(flow), None
-        r["onset_time"] = None if onset is None else r["t_first"] + onset / rate
-    if TRIM_TO_BREATH:
-        # Remove from the previous breath's tail anything after the next breath's inspiration start
-        for a, b in zip(records, records[1:]):
-            # Breaths without their own inspiration start (broken breaths) have dubious timing, so do not cut
-            if a["onset_time"] is None or b["onset_time"] is None or b["onset_time"] <= a["onset_time"]:
-                continue
-            cut = int(np.ceil((b["onset_time"] - a["t_first"]) * rate)) - TRIM_LEAD
-            if a["head"] + 1 < cut < a["tail"]:
-                a["tail"] = cut
-    for r in records:
-        r["wave_t0"] = r["t_first"] + r["head"] / rate
-
-
 # --- 0.2.0: rebuilding each breath from its last image (same approach as the Hamilton engine) ---
 LEAD_SEC = 1.0          # the inspiration onset is searched from this long before the breath's display update
 ONSET_AFTER_SEC = 0.5   # ... to this long after it
@@ -1044,47 +688,6 @@ TRIG_NEAR_PX = 4        # white pixels count only within this distance (rows) of
 TRIG_TOP_ROWS = 22      # rows at the top of each band are not used (panel title text; trigger marks are at the onset, lower down)
 TRIG_PEN_CLEAR = 4      # columns at the right end of a strip (white pen tip) are not used
 
-
-# --- Main function: generate per-breath waveform CSVs ---
-def AllWaveformTocsv(waves_csv="./outputs/FinalBreath.csv", frames_root="./frames", output_dir="./Breath"):
-    os.makedirs(output_dir, exist_ok=True)
-
-    breaths = pd.read_csv(waves_csv)
-    breaths["Start_Frame"] = breaths["iFrame"]
-    breaths["End_Frame"] = breaths["iFrame"].shift(-1) 
-    breaths = breaths.fillna(-1).astype({"Start_Frame": int, "End_Frame": int})
-
-    all_records = []
-    for _, row in tqdm(breaths.iterrows(), total=len(breaths)):
-        folder_id = str(row["source_file"]).split("_")[-1].split(".")[0]
-        folder_path = os.path.join(frames_root, folder_id)
-        start, end = row["Start_Frame"], row["End_Frame"]
-        if start < 0 or end <= start:
-            continue
-        img_start = os.path.join(folder_path, f"frame_{start:08d}.jpg")
-        img_end = os.path.join(folder_path, f"frame_{end:08d}.jpg")
-        if not (os.path.isfile(img_start) and os.path.isfile(img_end)):
-            continue
-        regions = get_difference_regions(img_end, img_start)
-        if not regions:
-            continue
-        regions = _select_breath_regions(regions)   # remove afterimage fragments on sweep wrap
-        waveforms = merge_waveforms_across_regions(img_end, regions)
-        waveforms = _trim_trailing_breath(waveforms) # trim the next breath's rise at the end
-        waveforms = _reject_volume_troughs(waveforms) # remove non-physiological V-troughs in Volume
-        x_start = regions[-1][0]
-        for name, series in waveforms.items():
-            for i, val in enumerate(series):
-                all_records.append({
-                    "BreathNumber": row["BreathNumber"],
-                    "WaveType": name,
-                    "X": x_start + i,
-                    "Value": val
-                })
-    out_df = pd.DataFrame(all_records)
-    out_df["X"] = out_df.groupby(["BreathNumber", "WaveType"]).cumcount() + 1
-    out_df.to_csv(os.path.join(output_dir, "Waves.csv"), index=False)
-    print("Waves.csv generated.")
 
 def BreathsToCSVs(*args, **kwargs):
     """Call _BreathsToCSVs with frame-image caching (_frame_cache) enabled."""
@@ -1155,6 +758,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     after = ONSET_AFTER_SEC * speed_px_s
     visible = sweep.SWEEP_W - sweep.ERASE_PX - VISIBLE_MARGIN_PX
     skip_logs, records = [], []
+    skipped_alerts = {}                                   # breaths without a waveform because of the image (Alert)
 
     # ---- 1. image and provisional span of each breath ----
     plans = []
@@ -1171,6 +775,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             img_row += 1                                   # later frames still show the breath while it is within one sweep
         if img_row >= len(frames) or abnormal[img_row]:
             skip_logs.append({"BreathNumber": bn, "Status": "SKIPPED", "Reason": "abnormal frames", "Details": f"end image row {e}"})
+            skipped_alerts[bn] = "Abnormal"
             plans.append(None)
             continue
         c_lo = max(np.floor(u[s] - lead), np.ceil(u[img_row] - visible))
@@ -1315,6 +920,8 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
         out_cols["Start_File_Name"][bn], out_cols["End_File_Name"][bn] = rec["start_name"], rec["end_name"]
         out_cols["Alert_Wave"][bn] = ",".join(rec["alerts"])
 
+    for bn, a in skipped_alerts.items():
+        out_cols["Alert_Wave"][bn] = a
     for col, values in out_cols.items():
         breaths[col] = breaths["BreathNumber"].map(values)
     # Waveform alerts join the breath alerts (comma separated)
@@ -1359,123 +966,6 @@ def _trigger_marks(strip, waves, c_from, c_to):
                 n += 1
         out[nm] = n
     return out
-
-def re_extract_breath_waveform(img_start_path, img_end_path, end_iframe, scale=None):
-    """Re-extract one breath's waveform from the diff of start/end frame images and return it as a DataFrame.
-
-    Same procedure as the BreathsToCSVs waveform extraction core (diff regions -> trim afterimage right of end cursor -> sweep-wrap region selection ->
-    region concatenation -> trim next breath at end -> Volume trough removal -> drop last 30 points).
-    Used after breath merging (Fragments etc. merged with neighbors) to rebuild one clean breath waveform from the merged interval.
-    Concatenating existing {n}.csv files stacks two breaths and breaks the waveform, so always re-extract with this function.
-    v1.3: trimming to the breath span (_trim_records_to_breaths) needs timing info, so it is not done here.
-
-    Parameters
-    ----------
-    img_start_path : str   start frame image path of the merged breath (= original Start_File_Name)
-    img_end_path   : str   end frame image path of the merged breath (= End_File_Name, the next breath's Frame)
-    end_iframe     : int   iframe number of the end frame (used to derive the previous frame for end-cursor detection)
-    scale          : dict|None  {name: {"min":, "max":}} if given, convert pixels to physical units.
-
-    Returns
-    -------
-    pandas.DataFrame | None   columns=[X, Pressure, Flow, Volume, Edi]. None if re-extraction is impossible.
-    """
-    if not (os.path.isfile(img_start_path) and os.path.isfile(img_end_path)):
-        return None
-
-    # Extract difference regions
-    regions = get_difference_regions(img_end_path, img_start_path)
-    if not regions:
-        return None
-
-    # Trim previous-sweep afterimage right of the end cursor (tip detected by diff with the previous frame)
-    before_path = os.path.join(os.path.dirname(img_end_path),
-                               f"frame_{int(end_iframe) - 1:08d}.jpg")
-    if int(end_iframe) - 1 >= 0 and os.path.isfile(before_path):
-        cursor_x = _detect_sweep_cursor(img_end_path, before_path)
-        regions = _trim_regions_right_of_cursor(regions, cursor_x)
-
-    regions = _select_breath_regions(regions)   # remove afterimage fragments on sweep wrap
-
-    # Waveform extraction
-    waveforms = merge_waveforms_across_regions(img_end_path, regions)
-    waveforms = _trim_trailing_breath(waveforms)   # trim the next breath's rise at the end
-    waveforms = _reject_volume_troughs(waveforms)  # remove non-physiological V-troughs in Volume
-    length = len(next(iter(waveforms.values()), []))
-    if length == 0:
-        return None
-
-    # Convert to physical units (scale={name:{min,max}}; reusing Breaths.csv P_min/P_max etc. avoids OCR)
-    if scale:
-        for nm in ["Pressure", "Flow", "Volume", "Edi"]:
-            if nm in scale and nm in waveforms and scale[nm] is not None:
-                waveforms[nm] = _pixels_to_physical(waveforms[nm], nm, scale[nm])
-
-    df_out = pd.DataFrame({"X": list(range(1, length + 1))})
-    for name in ["Pressure", "Flow", "Volume", "Edi"]:
-        df_out[name] = waveforms.get(name, [np.nan] * length)
-
-    if len(df_out) <= 30:   # too short if nothing remains after dropping the last 30 points (same criterion as BreathsToCSVs)
-        return None
-    return df_out.iloc[:-30].reset_index(drop=True)
-
-
-def WaveFromCSV(csv_path):
-    df = pd.read_csv(csv_path)
-    
-    # Sort by X column if present
-    if "X" in df.columns:
-        df = df.sort_values(by="X").reset_index(drop=True)
-        globals()["x_start"] = df["X"].iloc[0]  # record in a global variable
-    
-    waveforms = {}
-    for name in ["Pressure", "Flow", "Volume", "Edi"]:
-        if name in df.columns:
-            waveforms[name] = df[name].to_numpy()
-        else:
-            print(f"Warning: {name} column not found. Filling with NaN.")
-            waveforms[name] = np.full(len(df), np.nan)
-   
-
-
-    return waveforms
-
-def PlotWave(waveforms, x_vals=None, reference_waveforms=None):
-    wave_names = [k for k in ["Pressure", "Flow", "Volume", "Edi"] if k in waveforms and not k.lower().startswith("original")]
-    num_points = len(next(iter(waveforms.values())))
-    if x_vals is None:
-        x_vals = np.arange(1, num_points + 1)
-    else:
-        x_vals = np.asarray(x_vals)
-
-    rows = 2 if reference_waveforms else 1
-    fig, axes = plt.subplots(rows * len(wave_names), 1, figsize=(12, 2.5 * rows * len(wave_names)), sharex=True)
-    axes = np.array(axes).reshape((rows, len(wave_names))) if rows > 1 else np.array([axes])
-
-    for i, name in enumerate(wave_names):
-        for row, data in enumerate(([waveforms] + ([reference_waveforms] if reference_waveforms else []))):
-            ax = axes[row][i] if rows > 1 else axes[0][i]
-            y_vals = np.asarray(data.get(name, np.full(len(x_vals), np.nan)))
-            isnan = np.isnan(y_vals)
-            idx = np.where(~isnan)[0]
-            segments = np.split(idx, np.where(np.diff(idx) != 1)[0] + 1)
-            for seg in segments:
-                ax.plot(x_vals[seg], y_vals[seg], label=name)
-            if len(idx) > 0:
-                first_x = x_vals[idx[0]]
-                ax.axvline(first_x, color="red", linestyle="--", alpha=0.3)
-                ax.text(first_x + 2, np.nanmax(y_vals) * 0.95, f"X={first_x}", color="red", fontsize=8)
-            ax.set_ylabel("Height (px)")
-            ax.set_title(f"{name} {'(Reference)' if row == 1 else ''}")
-            ax.grid(True)
-
-    axes[-1][0].set_xlabel("X-coordinate (pixel)")
-    tick_indices = np.linspace(0, len(x_vals) - 1, num=10, dtype=int)
-    axes[-1][0].set_xticks(x_vals[tick_indices])
-    axes[-1][0].set_xticklabels([f"{x_vals[i]}" for i in tick_indices])
-
-    plt.tight_layout()
-    plt.show()
 
 
 class AbnormalFrameDetector:
