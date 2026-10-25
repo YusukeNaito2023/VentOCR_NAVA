@@ -24,6 +24,17 @@ Results change (breath boundaries, waveforms, new columns). Same approach as the
 - Checked against the Servo Tracker export (Trig cause): Servo-U 1 h in PC mode, patient 703/705 and machine 282/282; a flow-trigger clip, 99/103 and 90/90; a NAVA-mode clip, pressure 46/48, Edi 9/13 and machine 115/115.
 - The Triggered ROI (patient-trigger icon) is no longer OCRed: up to 0.1.x it was read with readtext every 10 frames, which never returned text (all NaN) and was not used.
 
+### Reading the numbers (faster, fewer misreads)
+- The numeric ROIs (VTe, EdiPeak, Cdyn, Ti/Ttot or I:E, Ppeak, VTi) are read on every frame by digit template matching (`glyphs.py`, `value_glyphs.npz`, about 0.4 ms per ROI), the same idea as the Hamilton engine's Compliance reading but used first: EasyOCR (7-30 ms per call) runs only when the templates cannot read an ROI, and then only when the ROI changed (diff gating as before). Decimal points and the I:E colon ("1 : 2.3") are small blobs; a digit cut by the ROI edge, or any digit correlating below 0.9 with its template, falls back to EasyOCR.
+- Templates: one set per ROI, built by `tools/build_value_glyphs.py` from the Servo-U 1-h video (2026-08-12 10-49-09), labels from EasyOCR, outliers dropped.
+- On held-out frames the templates agreed with EasyOCR wherever EasyOCR was right; every disagreement checked by eye was an EasyOCR misread (EdiPeak 4.1 for 4.7, 2.1 for 2.7; Ti/Ttot 0.19 for 0.18, 0.29 for 0.23; VTe "46]").
+- Engine option `glyph_read` (default true).
+
+### Images for post_ocr kept during initial_ocr
+- initial_ocr writes the waveform area of the frames post_ocr will read (the last frame before each Cdyn / VTe display update, the 5th and 10th frames after it, the last frame of each segment) to `<work>/NAVA_Kept/<segment>/` while the frames pass. post_ocr reads these first; others (e.g. after a pop-up) come from the app as before. The app no longer has to decode the video again for post_ocr (keyframes of the Servo-U recordings are 8.3 s apart, so one image could cost up to 250 decoded frames).
+- Engine option `keep_images` (default true).
+- 3-minute Servo-U clip with the app's direct decode: 63-73 s -> 20 s (OCR stage 42-49 -> 15.6 s, post-processing 20-23 -> 4.0 s; images the app made 100 -> 7).
+
 ### Other
 - IE_Ratio (Ti/Ttot) of a breath is the last value read in the breath (it was the first frame's). The display sometimes updates 1-2 frames after Cdyn / VTe, so the first frame often showed the previous breath's value. On the one-hour Servo-U recording, agreement with the ventilator export rose from 73.6% to 81.6% (direct-decode frames: 69.0% to 72.5%).
 - Diff gating: an ROI is OCRed again when at least 0.5% of its pixels changed by 24 gray levels or more since its last OCR (engine options `diff_px_level` 24, `diff_px_frac` 0.005), the same for every ROI. Up to 0.1.x the mean absolute difference was used (`diff_thresh` 2.0, `diff_thresh_cdyn` 0.5, removed): a one-digit change of Ti/Ttot moves it by only about 1.3, so on a Servo-U test of 4 minutes 393 frames kept a stale Ti/Ttot; and on frames decoded straight from the video (no re-encoding), noise of 0.6-1.3 made Cdyn be OCRed on about 92% of frames. With the new rule: OCR on 1-4% of frames per ROI and no stale frames.

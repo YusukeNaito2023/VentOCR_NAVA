@@ -40,6 +40,11 @@ def _load_frame(path):
     img = cv2.imread(path)
     if img is None:
         return None
+    if os.path.basename(os.path.dirname(os.path.dirname(path))) == KEEP_DIR_NAME:
+        canvas = np.zeros((Settings.BASE_RESOLUTION[1], Settings.BASE_RESOLUTION[0], 3), np.uint8)   # kept waveform area
+        x1, y1, x2, y2 = KEEP_BOX
+        canvas[y1:y2, x1:x2] = img
+        img = canvas
     if (img.shape[1], img.shape[0]) != Settings.BASE_RESOLUTION:
         interp = cv2.INTER_AREA if img.shape[1] > Settings.BASE_RESOLUTION[0] else cv2.INTER_LINEAR
         img = cv2.resize(img, Settings.BASE_RESOLUTION, interpolation=interp)
@@ -50,6 +55,14 @@ def _load_frame(path):
     return img
 
 
+# 0.2.0: initial_ocr keeps the images post_ocr reads (core._keep_frame), so the app does not decode the video again:
+# the waveform area KEEP_BOX (x1, y1, x2, y2 at BASE_RESOLUTION) of the last frame before each display update of
+# KEEP_TRIGGER_KEYS, of the frames KEEP_AFTER frames after it, and of the last frame of each segment, in
+# <work>/KEEP_DIR_NAME/<segment>/frame_<iFrame>.jpg. Other images (e.g. after a pop-up) come from the app as before.
+KEEP_DIR_NAME = "NAVA_Kept"
+KEEP_BOX = (130, 80, 900, 640)
+KEEP_TRIGGER_KEYS = ("Cdyn", "VTe")
+KEEP_AFTER = (5, 10)
 START_BACK_SEC = 0.6   # start image is this many seconds before the breath boundary (fixed at 6 frames up to v1.3)
 FRAME_CACHE_SIZE = 8   # per breath we read 4 images: start, end, and the one just before each
 _frame_cache = None    # OrderedDict only during BreathsToCSVs (path -> base-resolution image)
@@ -755,8 +768,12 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     iframe = frames["iFrame"].astype(int).to_numpy()
     row_of_frame = {int(f): i for i, f in enumerate(frames["Frame"])}
 
+    keep_root = os.path.join(os.path.dirname(os.path.normpath(frames_root)), KEEP_DIR_NAME)
+
     def path_of(row):
-        return f"{frames_root}/{seg[row]}/frame_{iframe[row]:08d}.jpg"
+        """Kept image of the frame if initial_ocr kept it, else the app's frame image."""
+        kept = f"{keep_root}/{seg[row]}/frame_{iframe[row]:08d}.jpg"
+        return kept if os.path.isfile(kept) else f"{frames_root}/{seg[row]}/frame_{iframe[row]:08d}.jpg"
 
     def time_of(col):
         return np.interp(col, u, times)

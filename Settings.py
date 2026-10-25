@@ -22,3 +22,8 @@ ROI_LIST_Abnormal_Detection = [
         (144, 91, 172, 631),     # ROI1: left-side region
         (1226, 92, 1251, 630)    # ROI2: right-side region
     ] # Where to search for comparing abnormal and normal frames
+
+
+# 0.2.0: digit templates of the numeric ROIs (glyphs.py; built by tools/build_value_glyphs.py from the Servo-U 1-h video
+# 2026-08-12 10-49-09, labels from EasyOCR, one set per ROI)
+VALUE_GLYPH_FILE = "value_glyphs.npz"

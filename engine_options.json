@@ -5,7 +5,9 @@
     "diff_gating": true,
     "diff_px_level": 24,
     "diff_px_frac": 0.005,
-    "recognize_conf_fallback": 0.5
+    "recognize_conf_fallback": 0.5,
+    "glyph_read": true,
+    "keep_images": true
   },
   "post_ocr": {
     "imputation_col": [

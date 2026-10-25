@@ -11,6 +11,7 @@ import glob
 import Global_Setting as GS
 from . import ExtractWaves as ew
 from . import sweep
+from . import glyphs
 from pathlib import Path
 import threading
 import time
@@ -178,6 +179,28 @@ def _create_easyocr_reader(gpu_enabled: bool):
         download_enabled=True
     )
 
+_glyph_reader = None
+
+
+def _get_glyph_reader():
+    """Template reader of the numeric ROIs (one per process); None without the template file."""
+    global _glyph_reader
+    if _glyph_reader is None:
+        _glyph_reader = glyphs.load_reader(os.path.dirname(os.path.abspath(__file__)), Settings.VALUE_GLYPH_FILE) or False
+    return _glyph_reader or None
+
+
+def _roi_changed(a, b):
+    """The displayed value changed: at least 0.5% of the pixels changed by 24 gray levels or more (video noise never does)."""
+    return (np.abs(a.astype(np.int16) - b.astype(np.int16)) >= 24).mean() >= 0.005
+
+
+def _keep_frame(keep_dir, i_frame, base_frame):
+    """Write the waveform area (ew.KEEP_BOX, BASE_RESOLUTION) of a frame for post_ocr (ew._load_frame reads it back)."""
+    x1, y1, x2, y2 = ew.KEEP_BOX
+    cv2.imwrite(os.path.join(keep_dir, f"frame_{i_frame:08d}.jpg"), base_frame[y1:y2, x1:x2], [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+
 def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=None, frames_dir=None):
     """
     v1.1: Supports a color frame generator.
@@ -187,7 +210,7 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
 
     Args:
         frames: Generator of color frames (BGR, numpy arrays). Do not convert to a list.
-        frames_dir: str (unused; kept for interface compatibility)
+        frames_dir: str, the frame image folder of the segment (0.2.0: its parent work folder gets ew.KEEP_DIR_NAME)
     """
     from easyocr import Reader
 
@@ -206,6 +229,15 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     diff_px_frac = _io.get("diff_px_frac", 0.005)
     # If recognize's conf is below this threshold, fall back to readtext (with detection)
     recognize_conf_fallback = _io.get("recognize_conf_fallback", 0.5)
+    # 0.2.0: the numeric ROIs are read by digit template matching on every frame (glyphs.py, value_glyphs.npz);
+    # EasyOCR is used only when the templates cannot read an ROI (and then only when the ROI changed: diff gating)
+    glyph_reader = _get_glyph_reader() if _io.get("glyph_read", True) else None
+    # 0.2.0: images for post_ocr are kept here while the frames pass (see _keep_frame), so post_ocr does not have the
+    # app decode the video again
+    keep_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.normpath(frames_dir))), ew.KEEP_DIR_NAME, subfolder) \
+        if frames_dir and _io.get("keep_images", True) else None
+    if keep_dir:
+        os.makedirs(keep_dir, exist_ok=True)
 
     reader = _ensure_easyocr_reader_ready(gpu_enabled)
     print(f"GPU:{gpu_enabled}")
@@ -250,6 +282,7 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     # v1.4: Abnormal frames (pop-ups, etc.) are detected here and become a column in Frames.csv.
     # Up to v1.3, DetectAbnormalFrames in post_ocr re-read the JPEGs of all frames
     abnormal_detector = ew.AbnormalFrameDetector()
+    prev_trigger_rois, prev_base_frame, keep_pending = None, None, set()
     sweep_detector = sweep.SweepDetector()
 
     def _flush_batch():
@@ -326,6 +359,7 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
             pending_frames.append(extracted_values)
             abnormal_detector.add(color_frame)   # v1.4: abnormal-frame detection (same order as Data)
 
+            trigger_rois = {}
             for key, (x, y, w, h) in roi_items:
                 if key in skip_keys:
                     extracted_values[key] = None
@@ -334,6 +368,19 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                     continue
 
                 roi = image[y:y+h, x:x+w]
+                if key in ew.KEEP_TRIGGER_KEYS:
+                    trigger_rois[key] = roi
+
+                if glyph_reader is not None:
+                    g = glyph_reader.read(roi, key)
+                    if g is not None:
+                        text, score = g
+                        if key == "IE_Ratio":
+                            extracted_values[key], extracted_values[f"{key}_raw"] = "", text
+                        else:
+                            extracted_values[key], extracted_values[f"{key}_raw"] = text, text
+                        extracted_values[f"{key}_conf"] = f"{score:.2f}"
+                        continue
 
                 # Diff gating: if the ROI is nearly identical to the one at the last OCR, skip OCR and
                 # copy the result of the last OCRed frame at finalize time.
@@ -355,6 +402,19 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                 batch_rois.append(roi)
                 batch_meta.append((frame_rel, key, key))
 
+            # Keep the images post_ocr will read: the last frame before a display update (the image of a breath) and
+            # KEEP_AFTER frames after it (read again when the next breath's onset is not on the screen yet)
+            if keep_dir:
+                updated = prev_trigger_rois is not None and any(
+                    k in prev_trigger_rois and _roi_changed(r, prev_trigger_rois[k]) for k, r in trigger_rois.items())
+                if updated and prev_base_frame is not None:
+                    _keep_frame(keep_dir, frame_count - 1, prev_base_frame)
+                    keep_pending.update(frame_count + d for d in ew.KEEP_AFTER)
+                if frame_count in keep_pending:
+                    _keep_frame(keep_dir, frame_count, color_frame)
+                    keep_pending.discard(frame_count)
+                prev_trigger_rois, prev_base_frame = trigger_rois, color_frame
+
             # Flush batch when it reaches the threshold
             if len(batch_rois) >= OCR_BATCH_SIZE:
                 _flush_batch()
@@ -368,6 +428,8 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
 
         # Flush remaining batch
         _flush_batch()
+        if keep_dir and prev_base_frame is not None:
+            _keep_frame(keep_dir, frame_count - 1, prev_base_frame)   # last frame of the segment (breaths across segments)
 
         # For frames reused by diff gating, apply the OCR result of the source frame.
         # pending_frames are kept until the end of the segment, so the source values are already final.

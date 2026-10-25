@@ -131,6 +131,12 @@ Engine/NAVA/
 
 ---
 
+#### Template Reading
+
+- The numeric ROIs are read on every frame by digit template matching (`glyphs.py`, templates `value_glyphs.npz`, one set per ROI). EasyOCR is used only when the templates cannot read an ROI. New templates (another ventilator or screen) can be built with `tools/build_value_glyphs.py` from an analysis of a video of that screen.
+
+---
+
 #### Diff Gating
 
 - Each ROI is OCRed again only when at least 0.5% of its pixels changed by 24 gray levels or more since its last OCR (`diff_px_level`, `diff_px_frac`); otherwise the last result is copied. Video noise never moves a pixel that much, and the smallest real change of a displayed value moves far more pixels.
