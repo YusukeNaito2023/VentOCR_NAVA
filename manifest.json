@@ -2,8 +2,8 @@
   "engine_key": "nava_ventocr",
   "display_name": "NAVA",
   "developer": "VentOCR Developer Team",
-  "version": "0.1.1",
-  "ventocr_min": "0.5.5",
+  "version": "0.1.2",
+  "ventocr_min": "0.6.2",
   "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames normalized to 1280x720). v1.3: waveform points are chosen from the vertical extent of the trace in each column (globally optimal path with peak/valley tips preserved), removing false spikes at steep transitions; Flow scale fit excludes steep segments. v1.4: abnormal frames (pop-ups) are detected in initial_ocr from in-memory frames (Frames.csv column Abnormal); post-processing reads only the frames used for waveform extraction (engine_api 3); frame counts follow GS.FPS (engine_api 2). v1.5: faster (same results as v1.4): grayscale and downscale only the regions read, reuse the EasyOCR reader, open frame images in ascending order.",
   "engine_api": 3,
 
@@ -18,6 +18,28 @@
   },
 
   "breath_summary": ["VTe", "Real_VTe", "Real_VTi", "Real_Ppeak", "EdiPeak", "Cdyn", "IE_Ratio"],
+
+  "outputs": {
+    "waves": [
+      { "name": "Pressure", "label": "Paw", "unit": "cmH2O", "color": "#d62728", "scale": { "min": "P_min", "max": "P_max" } },
+      { "name": "Flow",     "unit": "L/min", "color": "#1f77b4", "scale": { "min": "F_min", "max": "F_max" } },
+      { "name": "Volume",   "unit": "mL",    "color": "#2ca02c", "scale": { "min": "V_min", "max": "V_max" } },
+      { "name": "Edi",      "unit": "µV",    "color": "#9467bd", "scale": { "min": "E_min", "max": "E_max" } }
+    ],
+    "breath_values": [
+      { "name": "Real_VTe",   "label": "VTe",                    "unit": "mL",       "format": "{:.0f}" },
+      { "name": "Real_VTi",   "label": "VTi",                    "unit": "mL",       "format": "{:.0f}" },
+      { "name": "Real_Ppeak", "label": "Ppeak（ピーク圧）",       "unit": "cmH2O",    "format": "{:.0f}" },
+      { "name": "EdiPeak",    "label": "Edi peak",               "unit": "µV",       "format": "{:.1f}" },
+      { "name": "IE_Ratio",   "label": "I:E 比",                                     "format": "{:.2f}" },
+      { "name": "VTe",        "label": "VTe (displayed)",        "unit": "mL",       "format": "{:.0f}" },
+      { "name": "Cdyn",       "label": "Cdyn (displayed)",       "unit": "mL/cmH2O", "format": "{:.1f}" }
+    ],
+    "alerts": [
+      { "name": "Two_Breath", "label": { "ja": "長さが前後の呼吸の 1.5 倍以上（2 呼吸が 1 つになった疑い）", "en": "At least 1.5x the neighbouring breaths (possibly two breaths merged)" }, "exclude_from_accuracy": true },
+      { "name": "Fragment",   "label": { "ja": "長さが前後の呼吸の半分以下（呼吸の断片の疑い）", "en": "At most half the neighbouring breaths (possibly a fragment)" }, "exclude_from_accuracy": true }
+    ]
+  },
 
   "accuracy": {
     "VTe":        { "method": null, "threshold": null, "unit": "mL" },

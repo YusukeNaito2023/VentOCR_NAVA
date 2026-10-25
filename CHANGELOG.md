@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 0.1.2 (2026-10-25)
+解析の結果は 0.1.1 と同じ。manifest.json に出力の宣言 `outputs` を足した（VentOCR 0.6.2 から。ENGINE_API.md §8.1。形は Hamilton エンジンに合わせた）。`ventocr_min` を 0.6.2 に。
+- waves: Pressure（表示名 Paw、cmH2O）・Flow（L/min）・Volume（mL）・Edi（µV）。縦軸は画面の目盛り（P/F/V/E_min・max）。色はアプリの全機種共通
+- breath_values（並び = 呼吸プロパティの順）:
+  - Real_VTe（表示名 VTe）・Real_VTi（VTi）・Real_Ppeak（Ppeak）: その呼吸の値（次の呼吸の先頭の表示）
+  - EdiPeak: その呼吸の値（呼吸の途中で表示が更新される）
+  - IE_Ratio（I:E 比。I÷E の値）
+  - VTe (displayed)・Cdyn (displayed): その呼吸の間に表示されていた値 = 1 つ前の呼吸の値（Cdyn・VTe の表示は呼吸の区切りと同時に更新される）
+  - 表示の更新の確かめ（サンプル 45 呼吸）: Cdyn・VTe は 46 回とも呼吸の先頭で変わり、VTi・Ppeak・EdiPeak は呼吸の途中（3〜4 割の所）で変わる
+- alerts: Two_Breath（長さが前後の 1.5 倍以上）・Fragment（前後の半分以下）。どちらも精度の評価で除外する
+
 ## 0.1.1 (2026-10-21)
 ### 不具合の修正: 呼吸が少ないと解析が止まる
 - 波形を書き出す候補の呼吸が無いとき（呼吸の区切りが 2 つ以下。機種の確認で「続行」を選んだ合わない動画など）、

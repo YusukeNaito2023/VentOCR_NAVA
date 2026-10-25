@@ -13,7 +13,7 @@ from . import ExtractWaves as ew
 from pathlib import Path
 import threading
 
-ENGINE_VERSION = "0.1.1"
+ENGINE_VERSION = "0.1.2"
 VENTOCR_TESTED = "0.5.5"
 
 _GRAY_WEIGHTS = [0.114, 0.587, 0.299]   # v1.4 までの全画面のグレースケール化と同じ式（np.dot → uint8 に切り捨て）
