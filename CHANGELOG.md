@@ -27,6 +27,7 @@ Results change (breath boundaries, waveforms, new columns). Same approach as the
 ### Other
 - IE_Ratio (Ti/Ttot) of a breath is the last value read in the breath (it was the first frame's). The display sometimes updates 1-2 frames after Cdyn / VTe, so the first frame often showed the previous breath's value. On the one-hour Servo-U recording, agreement with the ventilator export rose from 73.6% to 81.6% (direct-decode frames: 69.0% to 72.5%).
 - Diff gating: an ROI is OCRed again when at least 0.5% of its pixels changed by 24 gray levels or more since its last OCR (engine options `diff_px_level` 24, `diff_px_frac` 0.005), the same for every ROI. Up to 0.1.x the mean absolute difference was used (`diff_thresh` 2.0, `diff_thresh_cdyn` 0.5, removed): a one-digit change of Ti/Ttot moves it by only about 1.3, so on a Servo-U test of 4 minutes 393 frames kept a stale Ti/Ttot; and on frames decoded straight from the video (no re-encoding), noise of 0.6-1.3 made Cdyn be OCRed on about 92% of frames. With the new rule: OCR on 1-4% of frames per ROI and no stale frames.
+- Frames.csv `OCR_Count`: number of ROIs actually OCRed on the frame (the others reused the last result).
 - EdiPeak preprocessing runs only for ROIs that are OCRed (the diff gating compares the ROI before preprocessing).
 - Settings removed: similarity_thresh, sampling_size, detect_sweep_line.
 - Alert Abnormal: the image of the breath is a pop-up or another screen (no waveform).

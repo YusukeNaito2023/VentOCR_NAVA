@@ -231,7 +231,8 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     extra_keys = [f"{k}_raw" for k in all_keys] + [f"{k}_conf" for k in all_keys]
     # 0.2.0: pen tip of every frame (x in pixels of the received frame, NaN if not detected) and the frame width,
     # used by ExtractWaves to rebuild each breath from its last image (same approach as the Hamilton engine)
-    column_order = all_keys + extra_keys + ["Sweep_Tip_Raw", "Frame_Width"]
+    # OCR_Count: number of ROIs actually OCRed on the frame (the others reused the last result; diff gating)
+    column_order = all_keys + extra_keys + ["Sweep_Tip_Raw", "Frame_Width", "OCR_Count"]
 
     # ---- Batch accumulator ----
     # Each entry: (frame_idx, key, roi_image)
@@ -321,7 +322,7 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
             image = _GrayView(color_frame)
 
             frame_rel = len(pending_frames)
-            extracted_values = {"_frame": frame_count, "Sweep_Tip_Raw": tip_raw, "Frame_Width": frame_width}
+            extracted_values = {"_frame": frame_count, "Sweep_Tip_Raw": tip_raw, "Frame_Width": frame_width, "OCR_Count": 0}
             pending_frames.append(extracted_values)
             abnormal_detector.add(color_frame)   # v1.4: abnormal-frame detection (same order as Data)
 
@@ -350,6 +351,7 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                     last_ocr_idx[key] = frame_rel
                 if key == "EdiPeak":
                     roi = _preprocess_for_edi(roi)
+                extracted_values["OCR_Count"] += 1
                 batch_rois.append(roi)
                 batch_meta.append((frame_rel, key, key))
 
@@ -440,7 +442,7 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     # Also create a per-breath dataframe (v1.4: abnormal-detection columns would only hold the first frame's value, so they are not put in Breaths.csv)
     df_breath = df.loc[df.groupby('BreathNumber')['Frame'].idxmin()]
     df_breath = df_breath.drop(columns=["Abnormal", "MeanDiff", "StdDiff", "HistCorr", "Sweep_Tip_Raw", "Sweep_U", "Sweep_X",
-                                        "Sweep_Speed", "Frame_Width", "BreathMark"], errors="ignore")
+                                        "Sweep_Speed", "Frame_Width", "OCR_Count", "BreathMark"], errors="ignore")
 
 
     # Fill in Edi Peak
