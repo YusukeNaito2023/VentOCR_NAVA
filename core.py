@@ -13,6 +13,7 @@ from . import ExtractWaves as ew
 from . import sweep
 from pathlib import Path
 import threading
+import time
 
 ENGINE_VERSION = "0.2.0"
 VENTOCR_TESTED = "0.5.5"
