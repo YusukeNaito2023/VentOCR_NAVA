@@ -197,8 +197,13 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     # Diff-gating settings (with defaults so that old engine_options without them still work)
     _io = settings["initial_ocr"]
     diff_gating = _io.get("diff_gating", True)
-    diff_thresh = _io.get("diff_thresh", 2.0)
-    diff_thresh_cdyn = _io.get("diff_thresh_cdyn", 0.5)  # Low threshold for Cdyn, to stay on the safe side
+    # 0.2.0: an ROI is OCRed again when at least diff_px_frac of its pixels changed by diff_px_level gray levels or
+    # more since its last OCR. Up to 0.1.x the mean absolute difference was used (2.0, Cdyn 0.5): a one-digit change
+    # of Ti/Ttot ("0.24" -> "0.26") is only about 1.3, so it was often not read again, while video noise (0.6-1.3 on
+    # frames decoded straight from the video) made Cdyn be OCRed on almost every frame. Noise never moves a pixel by
+    # 24 levels; the smallest real change on the Servo-U moves far more than 0.5% of the pixels by that much.
+    diff_px_level = _io.get("diff_px_level", 24)
+    diff_px_frac = _io.get("diff_px_frac", 0.005)
     # If recognize's conf is below this threshold, fall back to readtext (with detection)
     recognize_conf_fallback = _io.get("recognize_conf_fallback", 0.5)
 
@@ -335,9 +340,8 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                 # for ROIs that are actually OCRed (up to 0.1.x it ran on every frame)
                 if diff_gating and key in GATED_KEYS and key in prev_roi \
                         and prev_roi[key].shape == roi.shape:
-                    thresh = diff_thresh_cdyn if key == "Cdyn" else diff_thresh
-                    mad = np.abs(roi.astype(np.int16) - prev_roi[key].astype(np.int16)).mean()
-                    if mad < thresh:
+                    changed = (np.abs(roi.astype(np.int16) - prev_roi[key].astype(np.int16)) >= diff_px_level).mean()
+                    if changed < diff_px_frac:
                         reuse_links.append((frame_rel, key, last_ocr_idx[key]))
                         continue
 
