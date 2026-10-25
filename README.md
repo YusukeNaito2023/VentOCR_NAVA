@@ -6,7 +6,7 @@
 
 ### Changes in 0.2.0
 
-- Breaths are the ventilator's own boundaries (display updates of Cdyn / VTe) and are never merged or split by I:E. Up to 0.1.x, breaths whose Ti/Ttot was 0.5 or more (inverse-ratio I:E) were merged into the previous breath. Combining breaths is left to the combine_breaths module.
+- Breaths are the ventilator's own boundaries (display updates of Cdyn / VTe) and are never merged or split by I:E. Breaths during which the display is not updated are not split. Up to 0.1.x, breaths whose Ti/Ttot was 0.5 or more (inverse-ratio I:E) were merged into the previous breath. Combining breaths is left to the combine_breaths module.
 - Waveforms are built like the Hamilton engine: initial_ocr records the pen tip of every frame (Frames.csv `Sweep_X`, in pixels of the analyzed video), and each breath is rebuilt from its last image.
 - Coordinates are written in pixels of the analyzed video (any frame size; the frames are read at 1280x720 internally). Up to 0.1.x the sweep positions were in 1280x720 coordinates, so the app drew the sweep line at 2/3 of the true position on 1920x1080 videos.
 - Patient triggers come from the white part of the traces (the Servo-U draws the triggering part in white): Breaths.csv `Trigger` (A patient / C machine) and `Trigger_Source` (Pressure, Flow, Edi). The Triggered ROI is no longer OCRed (readtext could not read the trigger icon).
@@ -54,7 +54,7 @@ It extracts numerical parameters such as VTi, VTe, Cdyn, and Edi from waveform s
 This engine integrates:
 
 - OCR-based value extraction (EasyOCR)
-- Histogram-based trigger detection (OpenCV)
+- Patient-trigger detection from the white part of the traces (OpenCV)
 - Noise filtering and anomaly exclusion
 - Breath segmentation and reconstruction
 
@@ -117,15 +117,17 @@ Engine/NAVA/
 
 | ROI Name | Method |
 |--------|------|
-| Triggered | Histogram correlation (cv2.HISTCMP_CORREL) |
 | VTi, VTe, Cdyn | EasyOCR → numeric cleaning |
 
 ---
 
-#### Trigger Detection Logic
+#### Trigger Detection Logic (post_ocr, BreathsToCSVs)
 
-- Correlation > 0.9 → Not Triggered (0)
-- Correlation ≤ 0.9 → Triggered (1)
+- The Servo-U draws the triggering part of a trace in white (Paw for a pressure trigger, Flow for a flow trigger, Edi for an Edi trigger in NAVA mode).
+- For each breath, white pixels (saturation ≤ 45, brightness ≥ 100) within 4 rows of the extracted Paw / Flow / Edi trace are counted per column, from 0.4 s before the inspiration onset (`TRIG_LEAD_COLS` = 33 columns; a pressure trigger during expiration comes before the flow onset) to 1.0 s after it. The top 22 rows of each band (panel titles) and the pen tip are not used.
+- White screen furniture is not counted: pixels white on at least 30% of every 5th image read (grown by 2 px), such as the scale numbers at the bottom-left of each band and the Edi bar graph. This works for any layout and frame size.
+- A band with at least 2 such columns is a trigger source: `Trigger` = A (patient) / C (machine), `Trigger_Source` (e.g. Pressure, Flow, Edi, Pressure+Edi), counts `Trig_White_P/F/E`.
+- Checked against the Servo Tracker export (Trig cause): Servo-U 1 h in PC mode 703/705 patient, 282/282 machine; flow-trigger clip 99/103, 90/90; NAVA-mode clip 46/48 pressure and 9/13 Edi triggers, 115/115 machine.
 
 ---
 
@@ -182,16 +184,27 @@ hh:mm:ss:cc
 
 ---
 
-#### 3.1 Representative Frame Extraction
+#### 3.1 Breath Boundaries
 
-- First frame of each BreathNumber is used
+- A breath starts at a display update of Cdyn or VTe (`BOUNDARY_KEYS`). A new value must stay for at least 0.3 s (`STABLE_SEC`); shorter changes are misreads. Updates of Cdyn and VTe within 0.5 s (`MERGE_SEC`) are one boundary.
+- Breaths are boundaries only where the displayed values change. Breaths during which the display is not updated (for example while VTe is about 0 and Cdyn shows "***", when every breath shows the same values) are not split: they stay inside one breath. No breaths are added from the waveforms.
+- Breaths are never merged or split by I:E (combining breaths is left to the combine_breaths module).
+- Frames.csv `BreathMark` = 1 at the first frame of each breath; `BreathNumber` counts them.
 
 ---
 
-#### 3.2 Filtering Short Breaths
+#### 3.2 Alerts
 
-- Frame difference ≤ 13 → excluded
-- Merged into previous breath
+Breaths.csv / Frames.csv `Alert` (comma separated):
+
+| Alert | Meaning |
+|---|---|
+| Fragment | First or last breath, cut by the start or end of the recording |
+| Two_Breath | At least 1.5x the neighbouring breaths: possibly breaths without a display update in between (not split, see 3.1) |
+| Short | At most half the neighbouring breaths: possibly a misread display update |
+| Long | Longer than one sweep: only the part still on the screen is written (`Wave_T0` is the oldest column on the screen, not the inspiration onset) |
+| Partial | The end of the waveform is not on the screen yet |
+| Abnormal | Pop-up or another screen on the image of the breath (no waveform) |
 
 ---
 
@@ -219,7 +232,7 @@ Real_VTe
 Abnormal = 1
 ```
 
-- A breath whose start or end image (used to read the waveform) is Abnormal gets no waveform
+- A breath whose image (its last frame, or a later frame still showing it) is Abnormal gets no waveform (Alert Abnormal)
 
 ---
 
@@ -265,7 +278,7 @@ Includes:
 ## Exception Handling
 
 - OCR failure → 0 or NaN
-- Trigger detection uses histogram (not OCR)
+- Trigger detection uses the white part of the traces (not OCR)
 - Missing `sample_frame.jpg` → Exception
 
 ---

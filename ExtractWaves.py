@@ -682,11 +682,20 @@ VISIBLE_MARGIN_PX = 4   # columns behind the pen visible in one image = one swee
 MIN_BREATH_COLS = 20    # breaths shorter than this many columns (BASE_RESOLUTION) are not written
 TRIG_BANDS = ("Pressure", "Flow", "Edi")   # bands whose trace turns white at a patient trigger
 TRIG_WIN_SEC = 1.0      # white trigger marks are looked for from the onset to this long after it
-TRIG_LEAD_COLS = 10     # ... starting this many columns before the onset (a pressure trigger comes before the flow rise)
+TRIG_LEAD_COLS = 33     # ... starting this many columns (0.4 s) before the onset: a pressure trigger during expiration comes before the flow onset
 TRIG_MIN_COLS = 2       # a band with at least this many columns with white pixels counts as a trigger source
 TRIG_NEAR_PX = 4        # white pixels count only within this distance (rows) of the extracted trace
 TRIG_TOP_ROWS = 22      # rows at the top of each band are not used (panel title text; trigger marks are at the onset, lower down)
 TRIG_PEN_CLEAR = 4      # columns at the right end of a strip (white pen tip) are not used
+TRIG_WHITE_VAL_MIN = 100  # brightness of a white trigger mark (thin marks are dimmer than WHITE_VAL_MIN after downscaling;
+                          # the background is about 25 or less, colored traces are excluded by WHITE_SAT_MAX)
+# White screen furniture (scale numbers at the bottom-left of each band, the Edi bar graph at the right end of the sweep
+# area) touches the trace when it runs near it. Pixels that are white on many of the images read are not trigger marks:
+# every TRIG_STATIC_EVERY-th image read goes into a map; pixels white on at least TRIG_STATIC_FRAC of them (grown by
+# TRIG_STATIC_GROW px) are not used. A trigger mark stays at one place for one sweep only.
+TRIG_STATIC_EVERY = 5
+TRIG_STATIC_FRAC = 0.3
+TRIG_STATIC_GROW = 2
 
 
 def BreathsToCSVs(*args, **kwargs):
@@ -758,7 +767,8 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     after = ONSET_AFTER_SEC * speed_px_s
     visible = sweep.SWEEP_W - sweep.ERASE_PX - VISIBLE_MARGIN_PX
     skip_logs, records = [], []
-    skipped_alerts = {}                                   # breaths without a waveform because of the image (Alert)
+    skipped_alerts = {}
+    static = {"sum": None, "n": 0, "reads": 0}            # white screen furniture (see TRIG_STATIC_EVERY)                                   # breaths without a waveform because of the image (Alert)
 
     # ---- 1. image and provisional span of each breath ----
     plans = []
@@ -793,6 +803,12 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
         img = _load_frame(path_of(img_row))
         if img is None:
             return False
+        if static["reads"] % TRIG_STATIC_EVERY == 0:
+            hsv_full = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            white_full = ((hsv_full[..., 1] <= WHITE_SAT_MAX) & (hsv_full[..., 2] >= TRIG_WHITE_VAL_MIN)).astype(np.uint16)
+            static["sum"] = white_full if static["sum"] is None else static["sum"] + white_full
+            static["n"] += 1
+        static["reads"] += 1
         c_lo = int(max(np.floor(c_from), np.ceil(u[img_row] - visible)))
         c_hi = int(np.floor(u[img_row]))
         cols = np.arange(c_lo, c_hi + 1)
@@ -851,6 +867,12 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
         read_strip(pl, r, pl["start_col"] - TRIG_LEAD_COLS)
 
     # ---- 3. cut each breath to [start_col, end_col), trigger marks, records for the scale estimate ----
+    static_white = None
+    if static["n"]:
+        static_white = (static["sum"] >= TRIG_STATIC_FRAC * static["n"]).astype(np.uint8)
+        if TRIG_STATIC_GROW:
+            static_white = cv2.dilate(static_white, np.ones((2 * TRIG_STATIC_GROW + 1,) * 2, np.uint8))
+        static_white = static_white.astype(bool)
     for pl in live:
         c0 = max(pl["start_col"], pl["c_lo"])
         c1 = min(pl["end_col"], pl["c_hi"] + 1)
@@ -866,7 +888,8 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
         waves = {nm: v[i0:i1] for nm, v in pl["waves"].items()}
         # the pen tip at the right end of the strip is also drawn in white: keep clear of it
         trig_hi = min(i1, i0 + int(round(TRIG_WIN_SEC * speed_px_s)), len(pl["cols"]) - TRIG_PEN_CLEAR)
-        marks = _trigger_marks(pl["strip"], pl["waves"], max(0, i0 - TRIG_LEAD_COLS), trig_hi)
+        marks = _trigger_marks(pl["strip"], pl["waves"], max(0, i0 - TRIG_LEAD_COLS), trig_hi,
+                               static=static_white[:, pl["xs"]] if static_white is not None else None)
         records.append({
             "breath": pl["bn"], "k": pl["k"], "c0": c0, "c1": c1, "waves": waves, "zero": pl["zero"],
             "ppeak": breaths.at[pl["k"], "Real_Ppeak"] if "Real_Ppeak" in breaths else np.nan,
@@ -944,14 +967,17 @@ def _resample(src_cols, values, dst_cols):
     return out
 
 
-def _trigger_marks(strip, waves, c_from, c_to):
+def _trigger_marks(strip, waves, c_from, c_to, static=None):
     """Number of columns in [c_from, c_to) where the trace itself is white (patient trigger), per band (Pressure, Flow, Edi).
     Only pixels within TRIG_NEAR_PX of the extracted trace count, so panel titles, scale numbers and the Edi bar graph
-    (where the trace is empty) are not mistaken for trigger marks."""
+    (where the trace is empty) are not mistaken for trigger marks. static: white screen furniture for the strip's columns
+    (same shape as the strip's rows x columns); those pixels do not count."""
     if c_to <= c_from:
         return {nm: 0 for nm in TRIG_BANDS}
     hsv = cv2.cvtColor(strip[:, c_from:c_to], cv2.COLOR_BGR2HSV)
-    white_all = (hsv[..., 1] <= WHITE_SAT_MAX) & (hsv[..., 2] >= WHITE_VAL_MIN)
+    white_all = (hsv[..., 1] <= WHITE_SAT_MAX) & (hsv[..., 2] >= TRIG_WHITE_VAL_MIN)
+    if static is not None:
+        white_all &= ~static[:, c_from:c_to]
     out = {}
     for nm in TRIG_BANDS:
         y1, y2 = Y_RANGES[nm]

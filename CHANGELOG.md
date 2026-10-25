@@ -6,6 +6,7 @@ Results change (breath boundaries, waveforms, new columns). Same approach as the
 ### Breath boundaries
 - A breath starts where the ventilator updates its per-breath displays: Cdyn or VTe shows a new value (or "***") for at least 0.3 s; updates within 0.5 s count as one boundary. The two displays change together at the start of each breath; VTe also splits breaths where Cdyn stays the same or shows "***".
 - Breaths are no longer merged or split (CreateBreathNumber Steps 1.5-3.5 were removed). Up to 0.1.x, Step 3 merged every breath whose Ti/Ttot (I:E as I/(I+E)) was 0.5 or more into the previous breath; on a one-hour Servo-U recording this merged 87 breaths that the ventilator had counted (inverse-ratio I:E such as "6.3 : 1"). Combining breaths is left to the combine_breaths module.
+- Boundaries come only from changes of the displayed values. Breaths during which the display is not updated (for example while VTe is about 0 and Cdyn shows "***", when every breath shows the same values) are not split, and no breaths are added from the waveforms. On the one-hour Servo-U recording this leaves 41 of the ventilator's breaths inside longer breaths.
 - Alerts: Fragment (first / last breath, cut by the recording), Two_Breath (at least 1.5x the moving average of breath lengths), Short (at most half). They only flag breaths.
 
 ### Waveforms (rebuilt from the last image)
@@ -19,7 +20,8 @@ Results change (breath boundaries, waveforms, new columns). Same approach as the
 - Written in pixels of the analyzed video (frames of any size are read at 1280x720 internally): Frames.csv `Sweep_X` (pen tip on every frame) and the waveform rows (1 row = 1 column of the video; values read at 1280x720 are interpolated onto those columns), with `Wave_T0` / `Wave_Rate`. Breaths.csv no longer has X_Start / X_End / Sweep_Cursor_Start / Sweep_Cursor_End, which were in 1280x720 coordinates and made the app draw the sweep line at 2/3 of the true position on 1920x1080 videos.
 
 ### Patient trigger
-- The Servo-U draws the triggering part of a trace in white. White pixels on the extracted trace (within 4 rows, excluding the panel title rows) from 10 columns before to 1.0 s after the onset, in the Pressure / Flow / Edi bands: Breaths.csv `Trigger` (A patient / C machine), `Trigger_Source` and the counts `Trig_White_P/F/E`.
+- The Servo-U draws the triggering part of a trace in white. White pixels (saturation ≤ 45, brightness ≥ 100: thin marks are dimmer after downscaling) on the extracted trace (within 4 rows, excluding the panel title rows; excluding white screen furniture: pixels white on at least 30% of every 5th image read, grown by 2 px, such as the scale numbers at the bottom-left of each band and the Edi bar graph) from 0.4 s (33 columns) before to 1.0 s after the onset (a pressure trigger during expiration comes before the flow onset), in the Pressure / Flow / Edi bands: Breaths.csv `Trigger` (A patient / C machine), `Trigger_Source` and the counts `Trig_White_P/F/E`.
+- Checked against the Servo Tracker export (Trig cause): Servo-U 1 h in PC mode, patient 703/705 and machine 282/282; a flow-trigger clip, 99/103 and 90/90; a NAVA-mode clip, pressure 46/48, Edi 9/13 and machine 115/115.
 - The Triggered ROI (patient-trigger icon) is no longer OCRed: up to 0.1.x it was read with readtext every 10 frames, which never returned text (all NaN) and was not used.
 
 ### Other
