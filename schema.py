@@ -2,19 +2,9 @@ ENGINE_SETTINGS_SCHEMA = {
     "initial_ocr": {
         "skip_keys": {
             "type": "multiselect",
-            "choices": ["Cdyn", "EdiPeak", "Triggered", "VTe", "Ppeak", "VTi"],
+            "choices": ["Cdyn", "EdiPeak", "VTe", "Ppeak", "VTi", "IE_Ratio"],
             "default": [],
             "label": "ROI Keys to be skipped"
-        },
-        "similarity_thresh": {
-            "type": "float",
-            "default": 0.9,
-            "label": "Triggered Threshold for Breath Mark"
-        },
-        "sampling_size": {
-            "type": "int",
-            "default": 10,
-            "label": "Sampling Interval (Frames)"
         },
         "use_gpu": {
             "type": "bool",
@@ -43,11 +33,6 @@ ENGINE_SETTINGS_SCHEMA = {
             "type": "bool",
             "default": True,
             "label": "Trim Waveform to Breath (inspiration onset)"
-        },
-        "detect_sweep_line": {
-            "type": "bool",
-            "default": False,
-            "label": "Detect Sweep Line (annotate frames)"
         }
     }
 }

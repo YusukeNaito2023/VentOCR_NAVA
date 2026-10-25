@@ -10,6 +10,7 @@ import numpy as np
 import glob
 import Global_Setting as GS
 from . import ExtractWaves as ew
+from . import sweep
 from pathlib import Path
 import threading
 
@@ -189,10 +190,8 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     """
     from easyocr import Reader
 
-    sampling_size = settings["initial_ocr"]["sampling_size"]
-    skip_keys = settings["initial_ocr"]["skip_keys"]
-    similarity_thresh = settings["initial_ocr"]["similarity_thresh"]
-    gpu_enabled = settings["initial_ocr"]["use_gpu"]
+    skip_keys = settings["initial_ocr"].get("skip_keys", [])
+    gpu_enabled = settings["initial_ocr"].get("use_gpu", True)
 
     # Diff-gating settings (with defaults so that old engine_options without them still work)
     _io = settings["initial_ocr"]
@@ -209,32 +208,24 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     OCR_BATCH_SIZE = 16
 
     # Targets for skipping detection (recognize): single-number ROIs.
-    # IE_Ratio/Triggered keep readtext because they have multiple tokens / detection is useful.
+    # IE_Ratio keeps readtext because it has multiple tokens ("1 : 2.3") / detection is useful.
     RECOGNIZE_KEYS = {"VTe", "EdiPeak", "Cdyn", "Ppeak", "VTi"}
-    # Diff-gating targets: numeric display ROIs OCRed every frame
+    # 0.2.0: every ROI is a numeric display that changes only per breath, so all of them are checked on every frame
+    # and OCRed only when the ROI image changed (diff gating). The Triggered ROI (patient-trigger icon) is no longer
+    # OCRed: up to 0.1.x it was read with readtext every 10 frames, which never returned text for an icon.
+    # Patient triggers are now detected from the white parts of the waveforms (ExtractWaves).
     GATED_KEYS = {"VTe", "EdiPeak", "Cdyn", "IE_Ratio", "Ppeak", "VTi"}
-    # ROIs OCRed every frame (others every sampling_size). Values change only per breath, so diff gating skips most of them
-    EVERY_FRAME_KEYS = {"Cdyn", "IE_Ratio", "VTe", "EdiPeak", "Ppeak", "VTi"}
 
     Data = []
     frame_count = 0
-
-    # Load the image for histogram comparison
-    x, y, w, h = Settings.ROIs["Triggered"]
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    image_path = os.path.join(BASE_DIR, "sample_frame.jpg")
-    background_img = cv2.imread(image_path)
-    if background_img is None:
-        raise FileNotFoundError(f"Background image not found: {image_path}")
-    gray_background_image = cv2.cvtColor(background_img, cv2.COLOR_BGR2GRAY)
-    background_hist = cv2.calcHist([gray_background_image[y:y+h, x:x+w]], [0], None, [256], [0, 256])
-    cv2.normalize(background_hist, background_hist, 0, 1, cv2.NORM_MINMAX)
 
     # Pre-compute ROI keys and positions once
     roi_items = list(Settings.ROIs.items())
     all_keys = [k for k, _ in roi_items]
     extra_keys = [f"{k}_raw" for k in all_keys] + [f"{k}_conf" for k in all_keys]
-    column_order = all_keys + extra_keys
+    # 0.2.0: pen tip of every frame (x in pixels of the received frame, NaN if not detected) and the frame width,
+    # used by ExtractWaves to rebuild each breath from its last image (same approach as the Hamilton engine)
+    column_order = all_keys + extra_keys + ["Sweep_Tip_Raw", "Frame_Width"]
 
     # ---- Batch accumulator ----
     # Each entry: (frame_idx, key, roi_image)
@@ -252,6 +243,7 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     # v1.4: Abnormal frames (pop-ups, etc.) are detected here and become a column in Frames.csv.
     # Up to v1.3, DetectAbnormalFrames in post_ocr re-read the JPEGs of all frames
     abnormal_detector = ew.AbnormalFrameDetector()
+    sweep_detector = sweep.SweepDetector()
 
     def _flush_batch():
         """Send accumulated ROIs to EasyOCR in one batch call, then dispatch results."""
@@ -313,18 +305,17 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
         if progress_callback is not None:
             progress_callback(current=0, total=total_frames, message="Running OCR")
 
-        cdyn_folder = f"./temp/Cdyn_ROIs_{subfolder}"
-        os.makedirs(cdyn_folder, exist_ok=True)
-
         # Receive frames one by one from the color frame generator and convert to grayscale
         for color_frame in frames:
+            tip_raw = sweep_detector.add(color_frame)   # in pixels of the received frame
+            frame_width = color_frame.shape[1]
             # Resolution independence: normalize to the base resolution of the ROI definitions (Settings.BASE_RESOLUTION).
             # v1.5: Do not downscale the whole frame; downscale/grayscale only the regions used (_BaseFrame; results are identical to full-frame computation)
             color_frame = _BaseFrame(color_frame)
             image = _GrayView(color_frame)
 
             frame_rel = len(pending_frames)
-            extracted_values = {"_frame": frame_count}
+            extracted_values = {"_frame": frame_count, "Sweep_Tip_Raw": tip_raw, "Frame_Width": frame_width}
             pending_frames.append(extracted_values)
             abnormal_detector.add(color_frame)   # v1.4: abnormal-frame detection (same order as Data)
 
@@ -335,31 +326,27 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                     extracted_values[f"{key}_conf"] = "0.00"
                     continue
 
-                if frame_count % sampling_size == 0 or key in EVERY_FRAME_KEYS:
-                    roi = image[y:y+h, x:x+w]
+                roi = image[y:y+h, x:x+w]
 
-                    if key == "EdiPeak":
-                        roi = _preprocess_for_edi(roi)
+                # Diff gating: if the ROI is nearly identical to the one at the last OCR, skip OCR and
+                # copy the result of the last OCRed frame at finalize time.
+                # 0.2.0: the comparison uses the ROI before the EdiPeak preprocessing, so the preprocessing runs only
+                # for ROIs that are actually OCRed (up to 0.1.x it ran on every frame)
+                if diff_gating and key in GATED_KEYS and key in prev_roi \
+                        and prev_roi[key].shape == roi.shape:
+                    thresh = diff_thresh_cdyn if key == "Cdyn" else diff_thresh
+                    mad = np.abs(roi.astype(np.int16) - prev_roi[key].astype(np.int16)).mean()
+                    if mad < thresh:
+                        reuse_links.append((frame_rel, key, last_ocr_idx[key]))
+                        continue
 
-                    # Diff gating: if the ROI is nearly identical to the one at the last OCR, skip OCR and
-                    # copy the result of the last OCRed frame at finalize time
-                    if diff_gating and key in GATED_KEYS and key in prev_roi \
-                            and prev_roi[key].shape == roi.shape:
-                        thresh = diff_thresh_cdyn if key == "Cdyn" else diff_thresh
-                        mad = np.abs(roi.astype(np.int16) - prev_roi[key].astype(np.int16)).mean()
-                        if mad < thresh:
-                            reuse_links.append((frame_rel, key, last_ocr_idx[key]))
-                            continue
-
-                    batch_rois.append(roi)
-                    batch_meta.append((frame_rel, key, key))
-                    if key in GATED_KEYS:
-                        prev_roi[key] = roi.copy()
-                        last_ocr_idx[key] = frame_rel
-                else:
-                    extracted_values[key] = None
-                    extracted_values[f"{key}_raw"] = ""
-                    extracted_values[f"{key}_conf"] = "0.00"
+                if key in GATED_KEYS:
+                    prev_roi[key] = roi.copy()
+                    last_ocr_idx[key] = frame_rel
+                if key == "EdiPeak":
+                    roi = _preprocess_for_edi(roi)
+                batch_rois.append(roi)
+                batch_meta.append((frame_rel, key, key))
 
             # Flush batch when it reaches the threshold
             if len(batch_rois) >= OCR_BATCH_SIZE:
@@ -406,10 +393,27 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
             pass
 
     _pp(f"post_ocr: assigning breath numbers ({len(df)} rows)")
+    df = df.sort_values("Frame").reset_index(drop=True)
     df["IE_Ratio"] = df["IE_Ratio_raw"].apply(parse_IE_ratio)
+    for key in ("VTe", "EdiPeak", "Cdyn"):
+        if key in df.columns:
+            df[key] = pd.to_numeric(df[key], errors="coerce")
 
+    # 0.2.0: breath boundaries are the ventilator's display updates, unchanged (no merging or splitting)
+    df["BreathMark"] = breath_boundaries(df, GS.FPS)
+    df["BreathNumber"] = df["BreathMark"].cumsum() + (0 if len(df) and df["BreathMark"].iloc[0] == 1 else 1)
+    df["Alert"] = df["BreathNumber"].map(breath_alerts(df["BreathNumber"]))
 
-    df = CreateBreathNumber(df) # Correct Cdyn values using neighboring values, etc., then create Breath Number
+    # 0.2.0: pen tip of every frame (sweep tracking). Sweep_X is in pixels of the analyzed video (ENGINE_API §7.2)
+    width = float(pd.to_numeric(df.get("Frame_Width"), errors="coerce").median()) if "Frame_Width" in df else float(Settings.BASE_RESOLUTION[0])
+    sx = width / Settings.BASE_RESOLUTION[0]
+    fit = sweep.fit_sweep(pd.to_numeric(df["Sweep_Tip_Raw"], errors="coerce").to_numpy(float) / sx, GS.FPS) \
+        if "Sweep_Tip_Raw" in df else None
+    if fit is not None:
+        df["Sweep_U"] = np.round(fit["u"], 2)
+        df["Sweep_X"] = np.round(fit["x"] * sx, 1)
+        df["Sweep_Speed"] = round(fit["speed"] * GS.FPS, 3)     # BASE_RESOLUTION px per second
+        print(f"[post_ocr] sweep {fit['speed'] * GS.FPS:.2f} px/s, detected {fit['detected'].mean() * 100:.1f}% of frames")
 
         
     _pp("post_ocr: aggregating times and per-breath representative values")
@@ -430,7 +434,8 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
 
     # Also create a per-breath dataframe (v1.4: abnormal-detection columns would only hold the first frame's value, so they are not put in Breaths.csv)
     df_breath = df.loc[df.groupby('BreathNumber')['Frame'].idxmin()]
-    df_breath = df_breath.drop(columns=["Abnormal", "MeanDiff", "StdDiff", "HistCorr"], errors="ignore")
+    df_breath = df_breath.drop(columns=["Abnormal", "MeanDiff", "StdDiff", "HistCorr", "Sweep_Tip_Raw", "Sweep_U", "Sweep_X",
+                                        "Sweep_Speed", "Frame_Width", "BreathMark"], errors="ignore")
 
 
     # Fill in Edi Peak
@@ -480,11 +485,6 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     Effective_Breaths, df_breath = ew.BreathsToCSVs(df_breath,df_frames,GS.Dir_Frames(user_ID),GS.Dir_BreathCSVs(user_ID), user_ID, analyze_id=Analyze_Id, settings=settings)
     print(f"[post_ocr] BreathsToCSVs done ({Effective_Breaths} effective breaths)")
 
-    # Detect Sweep Line (off by default): when enabled, draws the sweep cursor on each frame and overwrites it (for diagnostics)
-    if settings.get("post_ocr", {}).get("detect_sweep_line", False):
-        print("[post_ocr] Detect Sweep Line: annotating frames with sweep cursor...")
-        _n_sweep = ew.annotate_sweep_lines(df_frames, GS.Dir_Frames(user_ID))
-        print(f"[post_ocr] Detect Sweep Line: annotated {_n_sweep} frames")
     
 
  
@@ -503,7 +503,7 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
             f.write(f"{w}\n")
         f.write("\n")
         f.write("[fields]\n")
-        for field in ["Cdyn", "VTe", "EdiPeak", "Real_VTe", "Real_VTe2", "Real_Ppeak", "Real_VTi", "Alert"]:
+        for field in ["Cdyn", "VTe", "EdiPeak", "Real_VTe", "Real_Ppeak", "Real_VTi", "Trigger", "Trigger_Source", "Alert"]:
             f.write(f"{field}\n")
 
     # Save scale_meta.json (Engine-specific scale adjustment settings: step width / unit / symmetry).
@@ -690,224 +690,84 @@ def most_frequent(series):
     return mode_values.iloc[0] if not mode_values.empty else None
 
 
-def _segment_by_cdyn(cdyn):
-    """Build breath boundaries (BreathNumber) from changes in the Cdyn value.
-    Consecutive NaNs (*** = Cdyn unreadable) are treated as the "same breath" and grouped.
-    In pandas NaN != NaN is True, so a naive ne(shift) splits a *** breath
-    into one segment per frame, which the later short-breath merge absorbs into neighbors so it
-    disappears. By not treating consecutive NaNs as boundaries, a *** breath is kept as one independent breath."""
-    changed = cdyn.ne(cdyn.shift())
-    changed &= ~(cdyn.isna() & cdyn.shift().isna())   # consecutive NaNs are treated as no change
-    return changed.cumsum()
+# ---- Breath boundaries (0.2.0) ----
+# A breath starts where the ventilator updates its per-breath displays. Cdyn and VTe are updated together at the start
+# of each breath (checked on the NAVA sample: 46 of 46). A display update is a new value (or "***") that stays at least
+# STABLE_SEC (shorter changes are misreads); updates of Cdyn and VTe within MERGE_SEC count as one boundary.
+# Up to 0.1.x the boundaries came from Cdyn only and were then merged or split by I:E (CreateBreathNumber Steps 1.5-3.5),
+# which merged real breaths whose Ti/Ttot was 0.5 or more (inverse-ratio I:E such as "6.3 : 1"). Breaths are no longer
+# merged or split here; combining breaths is left to the combine_breaths module (same policy as the Hamilton engine).
+BOUNDARY_KEYS = ("Cdyn", "VTe")
+STABLE_SEC = 0.3
+MERGE_SEC = 0.5
+LONG_RATIO = 1.5        # Alert Two_Breath: at least this many times the moving average of breath lengths
+SHORT_RATIO = 0.5       # Alert Short: at most this many times the moving average
+LENGTH_WINDOW = 30      # breaths in the moving average
 
 
-def CreateBreathNumber(df,
-                       IECutoff=0.5,
-                       ignore_first_m_within_breath=None,
-                       ignore_last_k_within_breath=None,
-                       N_for_moving_avg=30,
-                       long_ratio=1.5,
-                       short_ratio=0.5,
-                       ie_split_min_delta=0.15):
-    import pandas as pd
-    import numpy as np
+def _display_state(df, key):
+    """Shown value of a display per frame: the number, "***" (no value), or None (not readable / abnormal frame, carried forward)."""
+    val = pd.to_numeric(df[key], errors="coerce")
+    raw = df.get(f"{key}_raw", pd.Series("", index=df.index)).fillna("").astype(str)
+    stars = raw.str.contains(r"\*", regex=True) & ~raw.str.contains(r"\d", regex=True)
+    state = pd.Series([f"{v:g}" if np.isfinite(v) else ("***" if st else None) for v, st in zip(val, stars)], index=df.index, dtype=object)
+    if "Abnormal" in df:
+        state[pd.to_numeric(df["Abnormal"], errors="coerce").fillna(0).to_numpy() == 1] = None
+    return state.ffill()
 
-    # v1.4: Frame counts are derived from seconds using GS.FPS (engine_api 2 or later; at 10 fps, the same 3 / 3 / 5 frames as v1.3)
-    fps = GS.FPS
-    if ignore_first_m_within_breath is None:
-        ignore_first_m_within_breath = max(1, round(0.3 * fps))
-    if ignore_last_k_within_breath is None:
-        ignore_last_k_within_breath = max(1, round(0.3 * fps))
-    short_frames = max(1, round(0.5 * fps))
 
-    df = df.copy()
-    df["IE_Ratio"] = pd.to_numeric(df.get("IE_Ratio", np.nan), errors="coerce")
-    if "Alert" not in df.columns:
-        df["Alert"] = ""
-
-    # ---- Step 1: Rough split by Cdyn ---- (consecutive NaN = *** grouped as one breath)
-    df["BreathNumber"] = _segment_by_cdyn(df["Cdyn"])
-
-    # ---- Step 1.5: Merge short breaths (<=0.5 s) into a neighbor (existing: IE-based decision) ----
-    counts = df.groupby("BreathNumber").size()
-    shorts = list(counts[counts <= short_frames].index)
-    for b in shorts:
-        g = df[df["BreathNumber"] == b]
-        if g.empty:
+def breath_boundaries(df, fps):
+    """1 at the first frame of each breath (display update of Cdyn or VTe), else 0. df must be in frame order."""
+    stable = max(1, round(STABLE_SEC * fps))
+    merge = max(1, round(MERGE_SEC * fps))
+    events = set()
+    for key in BOUNDARY_KEYS:
+        if key not in df:
             continue
-        idxs = g.index.to_list()
-        first, last = idxs[0], idxs[-1]
-
-        prev_idx = df.index[df.index.get_loc(first)-1] if df.index.get_loc(first) > 0 else None
-        next_idx = df.index[df.index.get_loc(last)+1] if df.index.get_loc(last) < len(df.index)-1 else None
-        if prev_idx is None and next_idx is None:
+        st = _display_state(df, key).to_numpy(object)
+        n, cur, i = len(st), None, 0
+        while i < n:
+            v = st[i]
+            if v is None:
+                i += 1
+                continue
+            if cur is None:
+                cur = v
+                i += 1
+                continue
+            if v != cur:
+                j = i
+                while j < n and st[j] == v:
+                    j += 1
+                if j - i >= stable or j == n:
+                    events.add(i)
+                    cur = v
+                i = j
+                continue
+            i += 1
+    marks = np.zeros(len(df), int)
+    last = None
+    for e in sorted(events):
+        if last is not None and e - last < merge:
             continue
+        marks[e] = 1
+        last = e
+    return marks
 
-        ie_cur = g["IE_Ratio"].mode().iloc[0] if not g["IE_Ratio"].dropna().empty else None
-        ie_prev = df.at[prev_idx, "IE_Ratio"] if prev_idx is not None else None
-        ie_next = df.at[next_idx, "IE_Ratio"] if next_idx is not None else None
 
-        if ie_prev == ie_cur and ie_next != ie_cur:
-            target_bn = df.at[prev_idx, "BreathNumber"]; target_cd = df.at[prev_idx, "Cdyn"]
-        elif ie_next == ie_cur and ie_prev != ie_cur:
-            target_bn = df.at[next_idx, "BreathNumber"]; target_cd = df.at[next_idx, "Cdyn"]
-        else:
-            if next_idx is not None:
-                target_bn = df.at[next_idx, "BreathNumber"]; target_cd = df.at[next_idx, "Cdyn"]
-            else:
-                target_bn = df.at[prev_idx, "BreathNumber"]; target_cd = df.at[prev_idx, "Cdyn"]
-
-        df.loc[idxs, "BreathNumber"] = target_bn
-        df.loc[idxs, "Cdyn"] = target_cd
-
-    # ---- After merging, combine if Cdyn matches before and after ---- (same as above: consecutive NaNs are grouped)
-    df["BreathNumber"] = _segment_by_cdyn(df["Cdyn"])
-
-    # ---- Step 2: Additional split on changes of IE_Ratio < IECutoff ----
-    # Splits occur only within constant-Cdyn intervals, and only when the IE "change" is reliable.
-    # (Mistaking transitions to/from garbled/blank (0.0) IE reads or tiny jitter for boundaries splits a constant-Cdyn breath
-    #   and mass-produces Fragments. Checked against real data: resolved 12 IE-driven Fragments, kept 16 Cdyn-derived ones.)
-    base_breath = df["BreathNumber"].copy()
-    split_flag = pd.Series(0, index=df.index, dtype=int)
-
-    for bnum, g in df.groupby(base_breath, sort=True):
-        g_idx = g.index.to_list()
-        if not g_idx:
-            continue
-        ier = g["IE_Ratio"]
-        prev_ier = ier.shift(1)
-        changed = ier.ne(ier.shift(1))
-        changed.iloc[0] = False
-        pos = pd.Series(range(len(g_idx)), index=g_idx)
-
-        for i in g_idx:
-            if not changed.loc[i]:
-                continue
-            n = len(g_idx); p = pos.loc[i]
-            if p < ignore_first_m_within_breath: continue
-            if p >= n - ignore_last_k_within_breath: continue
-            v = ier.loc[i]; pv = prev_ier.loc[i]
-            if not (pd.notna(v) and v < IECutoff):
-                continue
-            # Do not split on transitions to/from garbled/blank IE (0.0) (a read appearing/disappearing is not a breath boundary)
-            if not (pd.notna(pv) and pv > 0 and v > 0):
-                continue
-            # Do not split on tiny IE jitter (only a reliable change magnitude counts as a boundary)
-            if abs(v - pv) < ie_split_min_delta:
-                continue
-            split_flag.loc[i] = 1
-
-    df["BreathNumber"] = base_breath + split_flag.cumsum()
-
-    # ---- Step 3: If IECutoff or above, merge into the previous one (handles chains) ----
-    merged = True
-    while merged:
-        merged = False
-        bnums = sorted(df["BreathNumber"].unique())
-        if len(bnums) <= 1: break
-        for idx in range(1, len(bnums)):
-            bn = bnums[idx]; prev_bn = bnums[idx-1]
-            g = df[df["BreathNumber"] == bn]
-            if g.empty: continue
-            g = g.copy(); g["__pos__"] = range(len(g))
-            g_valid = pd.to_numeric(
-                g.loc[g["__pos__"] >= ignore_first_m_within_breath, "IE_Ratio"],
-                errors="coerce"
-            ).dropna()
-            if not g_valid.empty and g_valid.iloc[0] >= IECutoff:
-                df.loc[df["BreathNumber"] == bn, "BreathNumber"] = prev_bn
-                merged = True; break
-        if merged:
-            mapping = {old: new for new, old in enumerate(sorted(df["BreathNumber"].unique()), start=1)}
-            df["BreathNumber"] = df["BreathNumber"].map(mapping)
-
-    # ========= NEW: Step 3.5 "late merge" of short breaths (Cdyn-based) =========
-    def _cdyn_rep(s: pd.Series) -> float:
-        s = pd.to_numeric(s, errors="coerce").dropna()
-        if s.empty: return np.nan
-        m = s.mode(dropna=True)
-        return float(m.iloc[0]) if not m.empty else float(s.median())
-
-    counts = df.groupby("BreathNumber").size()
-    short_bns = [int(b) for b, n in counts.items() if n <= 5]
-
-    # Current ordering used for neighbor search
-    def _neighbors(b):
-        bnums = sorted(df["BreathNumber"].unique())
-        if b not in bnums: return None, None
-        i = bnums.index(b)
-        prev_b = bnums[i-1] if i > 0 else None
-        next_b = bnums[i+1] if i < len(bnums)-1 else None
-        return prev_b, next_b
-
-    for b in sorted(short_bns):
-        g = df[df["BreathNumber"] == b]
-        if g.empty: continue
-
-        prev_b, next_b = _neighbors(b)
-        if prev_b is None and next_b is None: continue
-
-        cur_cdyn = _cdyn_rep(g["Cdyn"]) if "Cdyn" in g else np.nan
-        prev_cdyn = _cdyn_rep(df.loc[df["BreathNumber"] == prev_b, "Cdyn"]) if prev_b is not None else np.nan
-        next_cdyn = _cdyn_rep(df.loc[df["BreathNumber"] == next_b, "Cdyn"]) if next_b is not None else np.nan
-
-        # Decision logic (Cdyn)
-        atol = 1e-6
-        to_prev = prev_b is not None and np.isfinite(prev_cdyn) and np.isfinite(cur_cdyn) and np.isclose(prev_cdyn, cur_cdyn, rtol=0, atol=atol)
-        to_next = next_b is not None and np.isfinite(next_cdyn) and np.isfinite(cur_cdyn) and np.isclose(next_cdyn, cur_cdyn, rtol=0, atol=atol)
-
-        if to_prev and not to_next:
-            target = prev_b; rep_cdyn = prev_cdyn
-        elif to_next and not to_prev:
-            target = next_b; rep_cdyn = next_cdyn
-        elif to_prev and to_next:
-            # Same value on both sides -> merge into the longer one
-            prev_len = int(counts.get(prev_b, 0)); next_len = int(counts.get(next_b, 0))
-            if prev_len >= next_len:
-                target = prev_b; rep_cdyn = prev_cdyn
-            else:
-                target = next_b; rep_cdyn = next_cdyn
-        else:
-            # Merge into the closer side (min |dCdyn|). If tied, the later side.
-            candidates = []
-            if prev_b is not None and np.isfinite(prev_cdyn): candidates.append(("prev", prev_b, abs(cur_cdyn - prev_cdyn), prev_cdyn))
-            if next_b is not None and np.isfinite(next_cdyn): candidates.append(("next", next_b, abs(cur_cdyn - next_cdyn), next_cdyn))
-            if candidates:
-                candidates.sort(key=lambda x: (x[2], 0 if x[0]=="next" else 1))  # if the difference is equal, prefer next
-                _, target, _, rep_cdyn = candidates[0]
-            else:
-                target = next_b if next_b is not None else prev_b
-                rep_cdyn = next_cdyn if next_b is not None else prev_cdyn
-
-        # Apply the merge
-        idxs = g.index
-        df.loc[idxs, "BreathNumber"] = target
-        if "Cdyn" in df.columns and np.isfinite(rep_cdyn):
-            df.loc[idxs, "Cdyn"] = rep_cdyn
-
-        # counts are stale, so update them (rough recalculation)
-        counts = df.groupby("BreathNumber").size()
-
-    # Renumber after the late merge
-    mapping = {old: new for new, old in enumerate(sorted(df["BreathNumber"].unique()), start=1)}
-    df["BreathNumber"] = df["BreathNumber"].map(mapping)
-    if "__pos__" in df.columns:
-        df.drop(columns="__pos__", inplace=True, errors="ignore")
-
-    # ---- Step 4: Alert (Two_Breath / Fragment) ----
-    breath_lengths = df.groupby("BreathNumber").size().astype(int)
-    if len(breath_lengths) > 0:
-        window = max(1, min(N_for_moving_avg, len(breath_lengths)))
-        moving_avg = breath_lengths.rolling(window=window, min_periods=1, center=True).mean()
-
-        long_idx = breath_lengths.index[breath_lengths >= long_ratio * moving_avg]
-        df.loc[df["BreathNumber"].isin(long_idx), "Alert"] = "Two_Breath"
-
-        short_idx = breath_lengths.index[breath_lengths <= short_ratio * moving_avg]
-        mask_short = df["BreathNumber"].isin(short_idx) & (df["Alert"] == "")
-        df.loc[mask_short, "Alert"] = "Fragment"
-
-    return df
+def breath_alerts(breath_numbers):
+    """Alert per breath from its length: Fragment (first/last breath, cut by the recording), Two_Breath, Short."""
+    lengths = pd.Series(breath_numbers).value_counts().sort_index()
+    alerts = {b: [] for b in lengths.index}
+    if len(lengths):
+        alerts[lengths.index[0]].append("Fragment")
+        alerts[lengths.index[-1]].append("Fragment")
+        avg = lengths.rolling(window=max(1, min(LENGTH_WINDOW, len(lengths))), min_periods=1, center=True).mean()
+        for b in lengths.index[lengths >= LONG_RATIO * avg]:
+            alerts[b].append("Two_Breath")
+        for b in lengths.index[lengths <= SHORT_RATIO * avg]:
+            alerts[b].append("Short")
+    return {b: ",".join(dict.fromkeys(a)) for b, a in alerts.items()}
 
 
 

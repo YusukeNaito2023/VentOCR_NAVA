@@ -9,7 +9,6 @@ ROIs = {
     "VTe": [1139, 450, 55, 30],
     "EdiPeak":[953,518,67,31],
     "Cdyn": [1110,531,164,62],
-    "Triggered":[843,50,49,34],
     "IE_Ratio": [1086,243,168,44],
     # Displayed values used to convert waveforms to physical units (used by axis-scale estimation in ExtractWaves)
     "Ppeak": [952,112,80,70],     # The large "Ppeak" number (cmH2O)

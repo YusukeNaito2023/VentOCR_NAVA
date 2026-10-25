@@ -1,8 +1,6 @@
 {
   "initial_ocr": {
     "skip_keys": [],
-    "similarity_thresh": 0.9,
-    "sampling_size": 10,
     "use_gpu": true,
     "diff_gating": true,
     "diff_thresh": 2.0,
@@ -19,7 +17,6 @@
     "scale": {
       "enabled": true
     },
-    "trim_to_breath": true,
-    "detect_sweep_line": false
+    "trim_to_breath": true
   }
 }

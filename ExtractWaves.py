@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import Global_Setting as GS
 from . import Settings
+from . import sweep
 
 # Progress (overall) reporting is best-effort. Main processing continues even if the import fails.
 try:
@@ -116,6 +117,7 @@ VAL_MIN_LEFT = 45       # left edge (140-175) is the label area where waveforms 
 WHITE_SAT_MAX = 45
 WHITE_VAL_MIN = 140
 BORDER_ROWS = 2         # rows excluded from the top of the band (panel border line)
+TITLE_ROWS = 14         # rows at the top of the band with the panel title text (not used by the white fallback)
 
 # --- Parameters for determining waveform points from per-column ranges (v1.3) ---
 # v1.3 changes:
@@ -377,9 +379,11 @@ def _hue_circular_dist(hue_array, target_hue):
 
 
 # --- Hue (HSV) based waveform extraction ---
-def _column_runs(img, waveform_name):
+def _column_runs(img, waveform_name, screen_xs=None):
     """Per column, return vertical runs of waveform-colored pixels [(lo, hi, hue_dist)] (lo/hi are heights from band bottom).
-    Pixel classification (hue, saturation, value, left-edge text exclusion, white pen tip) is the same as v1.2."""
+    Pixel classification (hue, saturation, value, left-edge text exclusion, white pen tip) is the same as v1.2.
+    screen_xs (0.2.0): screen x (BASE_RESOLUTION) of each column of img. The rebuilt breath strips join columns from
+    both sides of a sweep wrap, so the screen position is given per column instead of x_start + column index."""
     h, w, _ = img.shape
     target_hue = TARGET_HUES.get(waveform_name)
     hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -388,7 +392,7 @@ def _column_runs(img, waveform_name):
         column = img[:, x, :]
         hsv_col = hsv_img[:, x, :]
         H, S, V = hsv_col[:, 0], hsv_col[:, 1], hsv_col[:, 2]
-        global_x = x + globals().get("x_start", 0)
+        global_x = int(screen_xs[x]) if screen_xs is not None else x + globals().get("x_start", 0)
 
         # Rule: for Edi, invalidate from sweep position (847) onward (same spec as v1.1)
         if waveform_name == "Edi" and 847 <= global_x:
@@ -414,13 +418,22 @@ def _column_runs(img, waveform_name):
         valid[:BORDER_ROWS] = False
 
         if not valid.any():
-            # Fallback: retry with white (sweep cursor tip)
+            # Fallback: retry with white (sweep cursor tip, and the white part of the trace at a patient trigger).
+            # 0.2.0: the rows of the panel title text ("Paw cmH2O") are not used, and every vertical run of white pixels
+            # is a candidate (the path choice keeps the one that continues the line). Up to 0.1.x the topmost white
+            # pixel was taken, which picked the title text above a white trigger mark and drew a spike.
             if waveform_name in ["Pressure", "Flow", "Edi"]:
                 white = (S <= WHITE_SAT_MAX) & (V >= WHITE_VAL_MIN) & extra_ok
-                white[:BORDER_ROWS] = False
+                white[:max(BORDER_ROWS, TITLE_ROWS)] = False
                 if white.any():
-                    r = int(np.where(white)[0][0])
-                    cols.append([(float(h - r), float(h - r), 0.0)])
+                    widx = np.where(white)[0]
+                    wruns, a0 = [], widx[0]
+                    for r0, r1 in zip(widx, widx[1:]):
+                        if r1 > r0 + RUN_JOIN:
+                            wruns.append((a0, r0))
+                            a0 = r1
+                    wruns.append((a0, widx[-1]))
+                    cols.append([(float(h - b), float(h - a), 0.0) for a, b in wruns])
                     continue
             cols.append([])
             continue
@@ -542,9 +555,9 @@ def _find_tips(a, b, y):
 
 
 # Internal function: given an image, returns waveform time-series data
-def _extract_waveform(img, target_bgr, max_dist=40, waveform_name=None, y_offset=0):
+def _extract_waveform(img, target_bgr, max_dist=40, waveform_name=None, y_offset=0, screen_xs=None):
     """Return the waveform time series (height from band bottom, missing = NaN) from per-column 'ranges the line passed through' (v1.3)."""
-    cols = _column_runs(img, waveform_name)
+    cols = _column_runs(img, waveform_name, screen_xs)
     out = np.full(len(cols), np.nan)
     chosen, segs = _choose_runs(cols)
     if not segs:
@@ -1018,6 +1031,20 @@ def _trim_records_to_breaths(records, rate):
         r["wave_t0"] = r["t_first"] + r["head"] / rate
 
 
+# --- 0.2.0: rebuilding each breath from its last image (same approach as the Hamilton engine) ---
+LEAD_SEC = 1.0          # the inspiration onset is searched from this long before the breath's display update
+ONSET_AFTER_SEC = 0.5   # ... to this long after it
+VISIBLE_MARGIN_PX = 4   # columns behind the pen visible in one image = one sweep - erase band - this margin
+MIN_BREATH_COLS = 20    # breaths shorter than this many columns (BASE_RESOLUTION) are not written
+TRIG_BANDS = ("Pressure", "Flow", "Edi")   # bands whose trace turns white at a patient trigger
+TRIG_WIN_SEC = 1.0      # white trigger marks are looked for from the onset to this long after it
+TRIG_LEAD_COLS = 10     # ... starting this many columns before the onset (a pressure trigger comes before the flow rise)
+TRIG_MIN_COLS = 2       # a band with at least this many columns with white pixels counts as a trigger source
+TRIG_NEAR_PX = 4        # white pixels count only within this distance (rows) of the extracted trace
+TRIG_TOP_ROWS = 22      # rows at the top of each band are not used (panel title text; trigger marks are at the onset, lower down)
+TRIG_PEN_CLEAR = 4      # columns at the right end of a strip (white pen tip) are not used
+
+
 # --- Main function: generate per-breath waveform CSVs ---
 def AllWaveformTocsv(waves_csv="./outputs/FinalBreath.csv", frames_root="./frames", output_dir="./Breath"):
     os.makedirs(output_dir, exist_ok=True)
@@ -1072,12 +1099,27 @@ def BreathsToCSVs(*args, **kwargs):
 
 def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=False, report_path=None, analyze_id=None, reader=None, settings=None):
     """
-    Extract difference regions from each breath episode's Start/End interval and build waveforms (Pressure, Flow, Volume, Edi).
-    Writes {BreathNumber}.csv and returns the processed breaths.
+    Write each breath's waveforms (Pressure, Flow, Volume, Edi) to {BreathNumber}.csv and return the processed breaths.
 
-    Additional options:
-        overwrite (bool): if True, delete existing {BreathNumber}.csv and overwrite
-        report_path (str|None): where to save the skip-reason CSV (None -> output_dir/BreathCSV_Report.csv)
+    0.2.0 (same approach as the Hamilton engine):
+    - The pen tip of every frame comes from initial_ocr (Frames.csv Sweep_Tip_Raw) and is tracked with sweep.fit_sweep
+      into an unwrapped position u (columns drawn so far, BASE_RESOLUTION). Frames.csv gets Sweep_X (pen tip x in
+      pixels of the analyzed video).
+    - A breath runs from its inspiration onset to the next breath's onset. Its columns are read from one image: the
+      last frame of the breath (the frame before the next breath's display update). That image shows every column of
+      the breath that is less than one sweep (minus the erase band) behind the pen; older columns of very long breaths
+      are left empty (Alert "Long"). At a wrap the Servo-U redraws the whole area (scales may change), so all columns of
+      one image share that image's scale.
+    - The inspiration onset is searched in Flow from LEAD_SEC before the breath's display update (the update comes
+      after the onset) to ONSET_AFTER_SEC after it. Without an onset the display update time minus the typical lag is used.
+    - Patient trigger: the Servo-U draws the triggering part of the waveform in white. White pixels in the Pressure /
+      Flow / Edi bands from the onset to TRIG_WIN_SEC after it give Trigger ("A" patient / "C" machine) and
+      Trigger_Source (bands with white marks).
+    - Output rows are columns of the analyzed video (1 row = 1 screen column, ENGINE_API §7.3): the values read at
+      BASE_RESOLUTION are interpolated onto those columns. Wave_T0 / Wave_Rate give the time of each row.
+
+    Up to 0.1.x each breath was read from a start image and an end image (and the frame before each) and the
+    waveform span came from their difference.
     """
     import os
     import numpy as np
@@ -1087,348 +1129,236 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     os.makedirs(output_dir, exist_ok=True)
     if report_path is None:
         report_path = os.path.join(GS.Dir_Outputs(user_id), "BreathCSV_Report.csv")
-
-    # ---- Setup: indices and ranges for safe mapping ----
-    # Index by frames and get the corresponding iframe and src (output_00000.csv)
-    # Get min/max of frame, and access frames_idx_iframe etc. only within that range
-    frames_idx_iframe = frames.set_index("Frame")["iFrame"]
-    frames_idx_src    = frames.set_index("Frame")["source_file"]
-    # v1.4: Abnormal is set by initial_ocr (if the column is missing, treat as no abnormality)
-    frames_idx_abn = (pd.to_numeric(frames["Abnormal"], errors="coerce").fillna(0).astype(int)
-                      if "Abnormal" in frames else pd.Series(0, index=frames.index))
-    frames_idx_abn.index = frames["Frame"]
-    frame_min = int(frames["Frame"].min())
-    frame_max = int(frames["Frame"].max())
-
-    skip_logs = []
-    summary_records = []
-
-    # Axis scale: accumulate per breath {BreathNumber: {name: {min,max,unit}}}.
-    # Ticks are determined together with neighboring breaths (_estimate_scales), so first collect all breaths' pixel waveforms, then convert and write.
-    # reader is the argument formerly used for OCR of axis numbers (kept for compatibility; unused)
+    fps = float(GS.FPS)
     scale_enabled = (settings or {}).get("post_ocr", {}).get("scale", {}).get("enabled", True)
-    breath_scales = {}
-    records = []        # in breath order: {breath, waves (pixels), zero, ppeak, vti, edi_peak, edi_full, df, out_path, ...}
-    sweep_rates = []    # sweep speed (px/s) derived from sweep positions and times in start/end images
-    # Diagnostics: per breath, store left/right x of the waveform region used for extraction and the sweep cursor x of start/end frames
-    # {BreathNumber: (x_start, x_end, cursor_start, cursor_end)}. For verifying Sweep detection in Label.
-    breath_xspan = {}
-    # Last successful Edi scale (reused for breaths that cannot be calibrated because EdiPeak is *** = NaN)
-    last_edi_scale = None
 
+    frames = frames.sort_values("Frame").reset_index(drop=True)
+    times = frames["Frame"].to_numpy(float) / fps
+    u = frames["Sweep_U"].to_numpy(float)                       # unwrapped pen tip (BASE_RESOLUTION columns)
+    speed_px_s = float(frames["Sweep_Speed"].iloc[0]) if len(frames) else sweep.SWEEP_PX_PER_SEC
+    sx = float(frames["Frame_Width"].median()) / Settings.BASE_RESOLUTION[0] if "Frame_Width" in frames else 1.0
+    abnormal = pd.to_numeric(frames.get("Abnormal", 0), errors="coerce").fillna(0).astype(int).to_numpy() \
+        if "Abnormal" in frames else np.zeros(len(frames), int)
+    seg = frames["source_file"].astype(str).str.replace("output_", "", regex=False).str.replace(".csv", "", regex=False).to_numpy()
+    iframe = frames["iFrame"].astype(int).to_numpy()
+    row_of_frame = {int(f): i for i, f in enumerate(frames["Frame"])}
 
-    # Start side: clip Frame-6 before mapping (avoid going negative at the beginning)
-    
-    # Convert the Breaths Frame column to numeric just in case, as a Series base_frame. I.e. base_frame is each breath's start frame number
-    base_frame = pd.to_numeric(breaths["Frame"], errors="coerce")
+    def path_of(row):
+        return f"{frames_root}/{seg[row]}/frame_{iframe[row]:08d}.jpg"
 
-    # If base_frame contains NaN etc., replace with frame_min; astype converts floats to int (17.0->17); clip replaces out-of-range (e.g. base_frame 3 minus 6 = -3) with frame_min
-    start_back = max(1, round(START_BACK_SEC * GS.FPS))   # v1.4: at 10 fps, the same 6 frames as v1.3
-    adjusted_frame_start = (base_frame - start_back).fillna(frame_min).astype(int).clip(frame_min, frame_max)
-    breaths["_Start_Frame"] = adjusted_frame_start   # v1.3: for computing waveform time (Wave_T0). Removed at the end
+    def time_of(col):
+        return np.interp(col, u, times)
 
+    breaths = breaths.sort_values("Frame").reset_index(drop=True)
+    starts = [row_of_frame.get(int(f)) for f in breaths["Frame"]]
+    lead = LEAD_SEC * speed_px_s
+    after = ONSET_AFTER_SEC * speed_px_s
+    visible = sweep.SWEEP_W - sweep.ERASE_PX - VISIBLE_MARGIN_PX
+    skip_logs, records = [], []
 
-    # Identify the start frame
-    # Start_File looks up frames_idx_iframe keyed by the value stored in adjusted_frame_start, so start_file gets the start iframe
-    # Start_Folder uses the same logic and ends up with a subfolder name like [00000]
-    breaths["Start_File"] = adjusted_frame_start.map(frames_idx_iframe)
-    breaths["Start_Folder"] = (
-        adjusted_frame_start.map(frames_idx_src)
-        .str.replace("output_", "", regex=False)
-        .str.replace(".csv",   "", regex=False)
-    )
-
-    # Identify the end frame
-    # End side: use the next breath's Frame as is (last row is removed since it has no End)
-    breaths["End_Frame"] = breaths["Frame"].shift(-1)
-    breaths = breaths.iloc[:-1]   # 0.1.1: so it does not fail on drop(index[-1]) when there are no breaths
-
-    adjusted_frame_end = pd.to_numeric(breaths["End_Frame"], errors="coerce").fillna(frame_max).astype(int)
-    adjusted_frame_end = adjusted_frame_end.clip(frame_min, frame_max)
-
-    breaths["_End_Frame"] = adjusted_frame_end   # v1.4: to check whether the end image is Abnormal. Removed at the end
-    breaths["End_File"] = adjusted_frame_end.map(frames_idx_iframe)
-    breaths["End_Folder"] = (
-        adjusted_frame_end.map(frames_idx_src)
-        .str.replace("output_", "", regex=False)
-        .str.replace(".csv",   "", regex=False)
-    )
-    breaths.drop(columns=["End_Frame"], inplace=True)
-
-    # Safely drop mapping failures (NaN)
-    bad = breaths[breaths[["Start_File", "End_File"]].isna().any(axis=1)]
-    if not bad.empty:
-        for _, r in bad.iterrows():
-            skip_logs.append({
-                "BreathNumber": int(r.get("BreathNumber", -1)),
-                "Status": "SKIPPED",
-                "Reason": "boundary map NaN",
-                "Details": f"Start={r.get('Start_File')}, End={r.get('End_File')}",
-            })
-        breaths = breaths.drop(bad.index)
-
-    # Build image paths (e.g. .\users\admin\Frames/00000/frame_00000039.jpg)
-    breaths["Start_File_Name"] = (
-        frames_root + "/" + breaths["Start_Folder"] + "/frame_" +
-        breaths["Start_File"].astype(int).astype(str).str.zfill(8) + ".jpg"
-    )
-    breaths["End_File_Name"] = (
-        frames_root + "/" + breaths["End_Folder"] + "/frame_" +
-        breaths["End_File"].astype(int).astype(str).str.zfill(8) + ".jpg"
-    )
-
-    # Exclude the first breath
-    breaths = breaths[breaths["BreathNumber"] != 1].reset_index(drop=True)
-
-    # Rows may have been dropped due to mapping failures, so reset the index before iterrows
-    breaths = breaths.reset_index(drop=True)
-
-    # v1.5: open the images to be used (start, end, and the one before each) up front, in ascending order of segment and frame number.
-    # The app (engine_api 3) builds opened images from segment videos, and forward reads can proceed without re-seeking.
-    # The processing below opens end -> start per breath (going backward), so v1.4 caused a segment-video seek every time
-    wanted = set()
-    for _, r in breaths.iterrows():
-        for folder_col, file_col in (("Start_Folder", "Start_File"), ("End_Folder", "End_File")):
-            try:
-                folder, iframe = str(r[folder_col]), int(r[file_col])
-            except (TypeError, ValueError):
-                continue
-            wanted.update((folder, i) for i in (iframe - 1, iframe) if i >= 0)
-    for folder, iframe in sorted(wanted):
-        os.path.isfile(f"{frames_root}/{folder}/frame_{iframe:08d}.jpg")
-
-    # ---- Process each breath ----
-    _bt_total = len(breaths)
-    for _bt_i, (_, row) in enumerate(tqdm(breaths.iterrows(), total=_bt_total), 1):
-        if _bt_i % 20 == 0 or _bt_i == _bt_total:
-            _report_progress(user_id, analyze_id,
-                             message=f"Extracting breath CSVs ({_bt_i}/{_bt_total})",
-                             current=_bt_i, total=_bt_total)
-        # Get and validate boundary values
-        try:
-            breath_num   = int(row["BreathNumber"])
-            start_iframe = int(row["Start_File"])
-            end_iframe   = int(row["End_File"])
-        except Exception as e:
-            skip_logs.append({
-                "BreathNumber": int(row.get("BreathNumber", -1)),
-                "Status": "SKIPPED",
-                "Reason": "missing boundary columns",
-                "Details": str(e),
-            })
+    # ---- 1. image and provisional span of each breath ----
+    plans = []
+    for k in range(len(breaths)):
+        bn = int(breaths.at[k, "BreathNumber"])
+        s = starts[k]
+        e = starts[k + 1] - 1 if k + 1 < len(breaths) and starts[k + 1] is not None else None
+        if k == 0 or s is None or e is None or e <= s:
+            skip_logs.append({"BreathNumber": bn, "Status": "SKIPPED", "Reason": "fragment (start or end of the recording)", "Details": ""})
+            plans.append(None)
             continue
-
-
-        # Filter Frames by BreathNumber to extract only this breath's data
-
-        filtered = frames[frames["BreathNumber"] == breath_num].copy()
-
-        # Error if empty
-        if filtered.empty:
-            skip_logs.append({
-                "BreathNumber": breath_num, "Status": "SKIPPED",
-                "Reason": "empty frame range", "Details": f"{start_iframe}-{end_iframe}",
-            })
+        img_row = e
+        while img_row < len(frames) and abnormal[img_row] and u[img_row] - visible < u[s] - lead:
+            img_row += 1                                   # later frames still show the breath while it is within one sweep
+        if img_row >= len(frames) or abnormal[img_row]:
+            skip_logs.append({"BreathNumber": bn, "Status": "SKIPPED", "Reason": "abnormal frames", "Details": f"end image row {e}"})
+            plans.append(None)
             continue
+        c_lo = max(np.floor(u[s] - lead), np.ceil(u[img_row] - visible))
+        c_hi = np.floor(u[img_row])
+        plans.append({"k": k, "bn": bn, "s": s, "e": e, "img": img_row, "c_lo": int(c_lo), "c_hi": int(c_hi)})
 
-        # v1.4: if the start/end images used to read the waveform are Abnormal (e.g. popups), do not write.
-        # Abnormal frames mid-breath don't matter (fine as long as the waveform can be read from the end image; same idea as Hamilton).
-        # Up to v1.3, a breath was not written if even one frame within it was Abnormal
-        abn_start = int(frames_idx_abn.get(int(row["_Start_Frame"]), 0))
-        abn_end = int(frames_idx_abn.get(int(row["_End_Frame"]), 0))
-        if abn_start or abn_end:
-            skip_logs.append({
-                "BreathNumber": breath_num, "Status": "SKIPPED",
-                "Reason": "abnormal frames", "Details": f"start={abn_start}, end={abn_end}",
-            })
+    # Open the images in ascending frame order first (the app creates them from the segment video on demand and
+    # reads forward without seeking)
+    for p in sorted({pl["img"] for pl in plans if pl is not None}):
+        os.path.isfile(path_of(p))
+
+    # ---- 2. read each strip, find the inspiration onset ----
+    def read_strip(pl, img_row, c_from):
+        """Read columns [max(c_from, oldest visible), pen] of image img_row into pl. False if the image is missing."""
+        img = _load_frame(path_of(img_row))
+        if img is None:
+            return False
+        c_lo = int(max(np.floor(c_from), np.ceil(u[img_row] - visible)))
+        c_hi = int(np.floor(u[img_row]))
+        cols = np.arange(c_lo, c_hi + 1)
+        xs = sweep.SWEEP_X_LEFT + np.mod(cols, sweep.SWEEP_W)
+        strip = img[:, xs, :]
+        waves = {}
+        for name, (y1, y2) in Y_RANGES.items():
+            series = pd.Series(_extract_waveform(strip[y1:y2], COLOR_DEFINITIONS[name], COLOR_TOLERANCE, waveform_name=name, screen_xs=xs))
+            if IMPUTATION:
+                series = series.interpolate(method="linear", limit_direction="both")
+            if SMOOTHING:
+                series = series.rolling(window=10, center=True, min_periods=1).mean()
+            waves[name] = series.to_numpy(float)
+        pl.update(img=img_row, c_lo=c_lo, c_hi=c_hi, cols=cols, xs=xs, strip=strip, waves=_reject_volume_troughs(waves),
+                  zero={nm: _zero_px(img, nm) for nm in ZERO_Y})
+        return True
+
+    for pl in tqdm(plans, total=len(plans)):
+        if pl is None:
             continue
-
-        # Check image existence
-        img_start = str(row["Start_File_Name"])
-        img_end   = str(row["End_File_Name"])
-        if not (os.path.isfile(img_start) and os.path.isfile(img_end)):
-            skip_logs.append({
-                "BreathNumber": breath_num, "Status": "SKIPPED",
-                "Reason": "image not found",
-                "Details": f"start={os.path.isfile(img_start)}, end={os.path.isfile(img_end)}",
-            })
+        if not read_strip(pl, pl["img"], u[pl["s"]] - lead):
+            skip_logs.append({"BreathNumber": pl["bn"], "Status": "SKIPPED", "Reason": "image not found", "Details": path_of(pl["img"])})
+            pl["skip"] = True
             continue
+        flow = pl["waves"]["Flow"] - pl["zero"]["Flow"]
+        on_lo = int(np.floor(u[pl["s"]] - lead)) - pl["c_lo"]
+        on_hi = int(np.ceil(u[pl["s"]] + after)) - pl["c_lo"]
+        onsets = [o for o in _inspiration_onsets(flow) if on_lo <= o <= on_hi]
+        pl["onset"] = (pl["c_lo"] + onsets[-1]) if onsets else None
 
-        # Extract difference regions
-        regions = get_difference_regions(img_end, img_start)
-        if not regions:
-            skip_logs.append({
-                "BreathNumber": breath_num, "Status": "SKIPPED",
-                "Reason": "no difference regions", "Details": "",
-            })
+    # Typical lag between the inspiration onset and the display update (for breaths without a detected onset)
+    lags = [u[pl["s"]] - pl["onset"] for pl in plans if pl is not None and not pl.get("skip") and pl.get("onset") is not None]
+    lag = float(np.median(lags)) if lags else 0.5 * speed_px_s
+    live = [pl for pl in plans if pl is not None and not pl.get("skip")]
+    for pl in live:
+        pl["start_col"] = pl["onset"] if (TRIM_TO_BREATH and pl["onset"] is not None) else int(round(u[pl["s"]] - (lag if TRIM_TO_BREATH else 0)))
+    for a, b in zip(live, live[1:]):
+        a["end_col"] = b["start_col"] if b["k"] == a["k"] + 1 else int(np.floor(u[a["e"]]))
+    if live:
+        live[-1]["end_col"] = int(np.floor(u[live[-1]["e"]]))
+
+    # The next breath's onset can lie beyond the pen of this breath's last image (onset after the display update):
+    # read the breath again from the first later image whose pen has passed it
+    rereads = []
+    for pl in live:
+        if pl["end_col"] - 1 <= pl["c_hi"]:
             continue
+        r = pl["img"] + 1
+        while r < len(frames) and (u[r] < pl["end_col"] - 1 or abnormal[r]) and u[r] - visible <= pl["start_col"]:
+            r += 1
+        if r < len(frames) and u[r] >= pl["end_col"] - 1 and not abnormal[r] and u[r] - visible <= pl["start_col"]:
+            rereads.append((r, pl))
+    for r in sorted({r for r, _ in rereads}):               # open in ascending order first (no seeking)
+        os.path.isfile(path_of(r))
+    for r, pl in rereads:
+        read_strip(pl, r, pl["start_col"] - TRIG_LEAD_COLS)
 
-        # Trim previous-sweep afterimage right of the end cursor (tip detected by diff with the previous frame).
-        # For a true wrap (separate left/right regions), do not trim; defer to _select_breath_regions.
-        # The previous frame is derived as (iframe-1) in the same folder as img_end.
-        cursor_x = None
-        before_path = os.path.join(os.path.dirname(img_end),
-                                   f"frame_{end_iframe - 1:08d}.jpg")
-        if end_iframe - 1 >= 0 and os.path.isfile(before_path):
-            cursor_x = _detect_sweep_cursor(img_end, before_path)
-            regions = _trim_regions_right_of_cursor(regions, cursor_x)
-
-        regions = _select_breath_regions(regions)   # remove afterimage fragments on sweep wrap
-
-        # Sweep cursor x on the start-frame side (detected by diff between start frame and previous frame)
-        cursor_x_start = None
-        before_start = os.path.join(os.path.dirname(img_start),
-                                    f"frame_{start_iframe - 1:08d}.jpg")
-        if start_iframe - 1 >= 0 and os.path.isfile(before_start):
-            cursor_x_start = _detect_sweep_cursor(img_start, before_start)
-
-        # Diagnostics: record left/right x of the extraction region and detected cursor x of start/end frames (output to Breaths.csv)
-        if regions:
-            breath_xspan[breath_num] = (
-                int(min(r[0] for r in regions)),
-                int(max(r[1] for r in regions)),
-                int(cursor_x_start) if cursor_x_start is not None else None,
-                int(cursor_x) if cursor_x is not None else None,
-            )
-
-        # Waveform extraction
-        waveforms = merge_waveforms_across_regions(img_end, regions)
-        waveforms = _trim_trailing_breath(waveforms) # trim the next breath's rise at the end
-        waveforms = _reject_volume_troughs(waveforms) # remove non-physiological V-troughs in Volume
-        length = len(next(iter(waveforms.values()), []))
-        if length == 0:
-            skip_logs.append({
-                "BreathNumber": breath_num, "Status": "SKIPPED",
-                "Reason": "empty waveform", "Details": "",
-            })
+    # ---- 3. cut each breath to [start_col, end_col), trigger marks, records for the scale estimate ----
+    for pl in live:
+        c0 = max(pl["start_col"], pl["c_lo"])
+        c1 = min(pl["end_col"], pl["c_hi"] + 1)
+        alerts = []
+        if pl["start_col"] < pl["c_lo"]:
+            alerts.append("Long")                          # older than one sweep: not visible in the image
+        if pl["end_col"] > pl["c_hi"] + 1:
+            alerts.append("Partial")
+        if c1 - c0 < MIN_BREATH_COLS:
+            skip_logs.append({"BreathNumber": pl["bn"], "Status": "SKIPPED", "Reason": "too short", "Details": f"{c1 - c0} columns"})
             continue
-
-        # Sweep speed (used to estimate Flow ticks). Breaths containing a wrap or spanning segments are not used
-        if cursor_x_start is not None and cursor_x is not None and cursor_x > cursor_x_start \
-                and row["Start_Folder"] == row["End_Folder"] and end_iframe > start_iframe:
-            sweep_rates.append((cursor_x - cursor_x_start) / ((end_iframe - start_iframe) / GS.FPS))
-
-        # Overwrite handling
-        out_path = os.path.join(output_dir, f"{breath_num}.csv")
-        if overwrite and os.path.exists(out_path):
-            try:
-                os.remove(out_path)
-            except Exception as e:
-                skip_logs.append({
-                    "BreathNumber": breath_num, "Status": "SKIPPED",
-                    "Reason": "overwrite failed", "Details": str(e),
-                })
-                continue
-
-        # CSV output (drop last 30 points)
-        df_out = pd.DataFrame({"X": list(range(1, length + 1))})
-        for name in ["Pressure", "Flow", "Volume", "Edi"]:
-            values = waveforms.get(name, [np.nan] * length)
-            df_out[name] = values
-
-        if len(df_out) <= 30:
-            skip_logs.append({
-                "BreathNumber": breath_num, "Status": "SKIPPED",
-                "Reason": "too short after trim", "Details": f"len={len(df_out)}",
-            })
-            continue
-
-        df_out = df_out.iloc[:-30].copy()
-        img_end_bgr = _load_frame(img_end) if scale_enabled else None
+        i0, i1 = c0 - pl["c_lo"], c1 - pl["c_lo"]
+        waves = {nm: v[i0:i1] for nm, v in pl["waves"].items()}
+        # the pen tip at the right end of the strip is also drawn in white: keep clear of it
+        trig_hi = min(i1, i0 + int(round(TRIG_WIN_SEC * speed_px_s)), len(pl["cols"]) - TRIG_PEN_CLEAR)
+        marks = _trigger_marks(pl["strip"], pl["waves"], max(0, i0 - TRIG_LEAD_COLS), trig_hi)
         records.append({
-            "breath": breath_num, "df": df_out, "out_path": out_path,
-            "waves": {nm: df_out[nm].to_numpy(float) for nm in ["Pressure", "Flow", "Volume", "Edi"]},
-            "zero": {nm: _zero_px(img_end_bgr, nm) for nm in ZERO_Y},
-            "ppeak": row.get("Real_Ppeak"), "vti": row.get("Real_VTi"),
-            "edi_peak": row.get("EdiPeak"), "edi_full": waveforms.get("Edi"),
-            "start_frame": int(row["_Start_Frame"]),
-            "x0": int(min(r[0] for r in regions)),
-            "cursor_start": int(cursor_x_start) if cursor_x_start is not None else None,
-            "summary": {
-                "BreathNumber": breath_num,
-                "Start_Frame_Image": img_start,
-                "End_Frame_Image": img_end,
-                "Regions": "; ".join([f"{x0}–{x1}" for (x0, x1) in regions]),
-            },
+            "breath": pl["bn"], "k": pl["k"], "c0": c0, "c1": c1, "waves": waves, "zero": pl["zero"],
+            "ppeak": breaths.at[pl["k"], "Real_Ppeak"] if "Real_Ppeak" in breaths else np.nan,
+            "vti": breaths.at[pl["k"], "Real_VTi"] if "Real_VTi" in breaths else np.nan,
+            "edi_peak": breaths.at[pl["k"], "EdiPeak"] if "EdiPeak" in breaths else np.nan,
+            "edi_full": waves["Edi"], "marks": marks, "alerts": alerts,
+            "start_name": path_of(pl["s"]), "end_name": path_of(pl["img"]),
         })
+        pl.pop("strip", None)
 
-    # ---- Estimate axis scales, convert to physical units, and write per-breath CSVs ----
-    rate = float(np.median(sweep_rates)) if len(sweep_rates) >= 3 else SWEEP_RATE_DEFAULT
-    estimated = _estimate_scales(records, rate) if scale_enabled else {}
-    _trim_records_to_breaths(records, rate)   # ticks are estimated from waveforms before trimming
-    breath_wave_time = {}
+    # ---- 4. axis scales, physical units, output on the analyzed video's columns ----
+    estimated = _estimate_scales(records, speed_px_s) if scale_enabled else {}
+    last_edi_scale = None
+    out_cols = {c: {} for c in ("P_min", "P_max", "F_min", "F_max", "V_min", "V_max", "E_min", "E_max", "Wave_T0", "Wave_Rate",
+                                "Wave_Points", "Trigger", "Trigger_Source", "Trig_White_P", "Trig_White_F", "Trig_White_E",
+                                "Start_File_Name", "End_File_Name", "Alert_Wave")}
+    written = 0
     for rec in records:
-        breath_num = rec["breath"]
-        df_out = rec["df"].iloc[rec["head"]:rec["tail"]].copy()   # X keeps the original column indices
-        breath_wave_time[breath_num] = (rec["wave_t0"], rate, rec["head"], len(rec["df"]) - rec["tail"])
+        bn = rec["breath"]
+        scale = dict(estimated.get(bn, {})) if scale_enabled else {}
         if scale_enabled:
-            scale = dict(estimated.get(breath_num, {}))
-            # Edi is calibrated with the EdiPeak value
             edi_scale = _edi_scale_from_peak(rec["edi_peak"], rec["edi_full"])
             if edi_scale:
-                scale["Edi"] = edi_scale
-                last_edi_scale = edi_scale         # remember the valid scale
+                scale["Edi"] = last_edi_scale = edi_scale
             elif last_edi_scale is not None:
-                # Cannot calibrate because EdiPeak is *** (NaN) etc. -> reuse the Edi scale of the last valid breath
                 scale["Edi"] = last_edi_scale
-            for nm, sc in scale.items():
-                df_out[nm] = _pixels_to_physical(df_out[nm].tolist(), nm, sc)
-            if scale:
-                breath_scales[breath_num] = scale
-        df_out.to_csv(rec["out_path"], index=False)
-        print(f"{rec['out_path']} created")
-
-        # Summary/report
-        summary_records.append(rec["summary"])
-        skip_logs.append({
-            "BreathNumber": breath_num, "Status": "OK", "Reason": "", "Details": ""
-        })
-
-    # ---- Expand per-breath scales into columns for Breaths.csv (P_min,P_max,F_min,...) ----
-    if breath_scales:
+        base_cols = np.arange(rec["c0"], rec["c1"], dtype=float)
+        n0, n1 = int(np.ceil(rec["c0"] * sx)), int(np.ceil(rec["c1"] * sx))
+        native = np.arange(n0, n1)
+        df_out = pd.DataFrame({"X": native})
+        for nm in ("Pressure", "Flow", "Volume", "Edi"):
+            vals = _resample(base_cols, rec["waves"][nm], native / sx)
+            df_out[nm] = _pixels_to_physical(vals.tolist(), nm, scale[nm]) if nm in scale else np.round(vals, 2)
+        path = os.path.join(output_dir, f"{bn}.csv")
+        if overwrite or not os.path.exists(path):
+            df_out.to_csv(path, index=False)
+        written += 1
+        skip_logs.append({"BreathNumber": bn, "Status": "OK", "Reason": "", "Details": ""})
         short = {"Pressure": "P", "Flow": "F", "Volume": "V", "Edi": "E"}
-        def _sc(b, nm, key):
-            try:
-                return breath_scales.get(int(b), {}).get(nm, {}).get(key)
-            except (ValueError, TypeError):
-                return None
         for nm, pfx in short.items():
-            breaths[f"{pfx}_min"] = breaths["BreathNumber"].map(lambda b, nm=nm: _sc(b, nm, "min"))
-            breaths[f"{pfx}_max"] = breaths["BreathNumber"].map(lambda b, nm=nm: _sc(b, nm, "max"))
+            if nm in scale:
+                out_cols[f"{pfx}_min"][bn], out_cols[f"{pfx}_max"][bn] = scale[nm]["min"], scale[nm]["max"]
+        out_cols["Wave_T0"][bn] = round(float(time_of(n0 / sx)), 4)
+        out_cols["Wave_Rate"][bn] = round(speed_px_s * sx, 4)
+        out_cols["Wave_Points"][bn] = len(native)
+        src = [nm for nm, key in (("Pressure", "P"), ("Flow", "F"), ("Edi", "E")) if rec["marks"][nm] >= TRIG_MIN_COLS]
+        out_cols["Trigger"][bn] = "A" if src else "C"
+        out_cols["Trigger_Source"][bn] = "+".join(src)
+        for nm, key in (("Pressure", "P"), ("Flow", "F"), ("Edi", "E")):
+            out_cols[f"Trig_White_{key}"][bn] = rec["marks"][nm]
+        out_cols["Start_File_Name"][bn], out_cols["End_File_Name"][bn] = rec["start_name"], rec["end_name"]
+        out_cols["Alert_Wave"][bn] = ",".join(rec["alerts"])
 
-    # ---- Diagnostics: expand left/right x of extracted waveform region (X_Start/X_End) and detected cursor positions into columns ----
-    def _xs(b, i):
-        try:
-            v = breath_xspan.get(int(b))
-            return v[i] if v is not None else None
-        except (ValueError, TypeError):
-            return None
-    breaths["X_Start"] = breaths["BreathNumber"].map(lambda b: _xs(b, 0))
-    breaths["X_End"] = breaths["BreathNumber"].map(lambda b: _xs(b, 1))
-    breaths["Sweep_Cursor_Start"] = breaths["BreathNumber"].map(lambda b: _xs(b, 2))
-    breaths["Sweep_Cursor_End"] = breaths["BreathNumber"].map(lambda b: _xs(b, 3))
-
-    # ---- v1.3: time of first waveform point and sweep speed (the app uses these to compute each point's time), rows trimmed ----
-    def _wt(b, i):
-        try:
-            v = breath_wave_time.get(int(b))
-            return v[i] if v is not None else None
-        except (ValueError, TypeError):
-            return None
-    breaths["Wave_T0"] = breaths["BreathNumber"].map(lambda b: _wt(b, 0))
-    breaths["Wave_Rate"] = breaths["BreathNumber"].map(lambda b: _wt(b, 1))
-    breaths["Wave_Trim_Head"] = breaths["BreathNumber"].map(lambda b: _wt(b, 2))
-    breaths["Wave_Trim_Tail"] = breaths["BreathNumber"].map(lambda b: _wt(b, 3))
-    breaths = breaths.drop(columns=["_Start_Frame", "_End_Frame"])
-
-    # ---- Report output ----
-    # 0.1.1: when there were no candidate breaths to write (2 or fewer breath boundaries, e.g. mismatched video), skip_logs was empty and
-    # sorting a column-less table raised KeyError and stopped the analysis. Make it a table with columns even when empty
+    for col, values in out_cols.items():
+        breaths[col] = breaths["BreathNumber"].map(values)
+    # Waveform alerts join the breath alerts (comma separated)
+    alert = breaths.get("Alert", pd.Series("", index=breaths.index)).fillna("").astype(str)
+    breaths["Alert"] = [",".join(dict.fromkeys([x for x in (a.split(",") + w.split(",")) if x and x != "nan"]))
+                        for a, w in zip(alert, breaths["Alert_Wave"].fillna("").astype(str))]
+    breaths = breaths.drop(columns=["Alert_Wave"])
     report_df = pd.DataFrame(skip_logs, columns=["BreathNumber", "Status", "Reason", "Details"]).sort_values("BreathNumber")
     report_df.to_csv(report_path, index=False)
+    return written, breaths
 
-    return len(summary_records), breaths
 
+def _resample(src_cols, values, dst_cols):
+    """Linear interpolation of values (at src_cols) onto dst_cols; NaN where either neighbouring sample is NaN."""
+    v = np.asarray(values, float)
+    out = np.interp(dst_cols, src_cols, np.nan_to_num(v))
+    j = np.clip(np.searchsorted(src_cols, dst_cols, side="right") - 1, 0, len(src_cols) - 1)
+    j2 = np.clip(j + 1, 0, len(src_cols) - 1)
+    out[~(np.isfinite(v[j]) & np.isfinite(v[j2]))] = np.nan
+    return out
+
+
+def _trigger_marks(strip, waves, c_from, c_to):
+    """Number of columns in [c_from, c_to) where the trace itself is white (patient trigger), per band (Pressure, Flow, Edi).
+    Only pixels within TRIG_NEAR_PX of the extracted trace count, so panel titles, scale numbers and the Edi bar graph
+    (where the trace is empty) are not mistaken for trigger marks."""
+    if c_to <= c_from:
+        return {nm: 0 for nm in TRIG_BANDS}
+    hsv = cv2.cvtColor(strip[:, c_from:c_to], cv2.COLOR_BGR2HSV)
+    white_all = (hsv[..., 1] <= WHITE_SAT_MAX) & (hsv[..., 2] >= WHITE_VAL_MIN)
+    out = {}
+    for nm in TRIG_BANDS:
+        y1, y2 = Y_RANGES[nm]
+        top = y1 + TRIG_TOP_ROWS
+        trace = np.asarray(waves[nm], float)[c_from:c_to]           # height from the band bottom
+        n = 0
+        for i, hgt in enumerate(trace):
+            if not np.isfinite(hgt):
+                continue
+            row = int(round(y2 - hgt))
+            if white_all[max(top, row - TRIG_NEAR_PX):min(y2, row + TRIG_NEAR_PX + 1), i].any():
+                n += 1
+        out[nm] = n
+    return out
 
 def re_extract_breath_waveform(img_start_path, img_end_path, end_iframe, scale=None):
     """Re-extract one breath's waveform from the diff of start/end frame images and return it as a DataFrame.
