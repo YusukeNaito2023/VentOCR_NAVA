@@ -36,6 +36,7 @@ Results change (breath boundaries, waveforms, new columns). Same approach as the
 - 3-minute Servo-U clip with the app's direct decode: 63-73 s -> 20 s (OCR stage 42-49 -> 15.6 s, post-processing 20-23 -> 4.0 s; images the app made 100 -> 7).
 
 ### Other
+- Breaths.csv `Real_Cdyn`: the Cdyn of the breath (the value shown at the start of the next breath, like Real_VTe; "***" -> empty). The `Cdyn` column stays the displayed value (the previous breath's).
 - IE_Ratio (Ti/Ttot) of a breath is the last value read in the breath (it was the first frame's). The display sometimes updates 1-2 frames after Cdyn / VTe, so the first frame often showed the previous breath's value. On the one-hour Servo-U recording, agreement with the ventilator export rose from 73.6% to 81.6% (direct-decode frames: 69.0% to 72.5%).
 - Frames.csv `OCR_Count`: number of ROIs actually OCRed on the frame (the others reused the last result).
 - EdiPeak preprocessing runs only for ROIs that are OCRed (the diff gating compares the ROI before preprocessing).

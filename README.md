@@ -214,13 +214,13 @@ Breaths.csv / Frames.csv `Alert` (comma separated):
 
 ---
 
-#### 3.3 Real VTe Assignment
+#### 3.3 Real VTe / Real Cdyn Assignment
 
-- Ventilator displays delayed VTe
-- Assigned to previous breath as:
+- The ventilator shows VTe and Cdyn of a breath at the start of the next breath (the `VTe` and `Cdyn` columns of a breath are the previous breath's values)
+- The values shown at the start of the next breath are assigned to the breath as:
 
 ```
-Real_VTe
+Real_VTe, Real_Cdyn
 ```
 
 ---
@@ -277,6 +277,7 @@ Includes:
 - Cdyn
 - VTe
 - Real_VTe
+- Real_Cdyn
 - BreathNumber
 
 ---

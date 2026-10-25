@@ -14,10 +14,10 @@
   "has_extract_waves": false,
   "output_columns": {
     "frames": ["Frame", "VTi", "VTe", "Cdyn", "Ppeak", "EdiPeak", "IE_Ratio", "BreathMark", "BreathNumber", "Abnormal", "Sweep_X", "Sweep_U", "Alert"],
-    "breaths": ["BreathNumber", "Cdyn", "VTe", "Real_VTe", "Real_Ppeak", "Real_VTi", "EdiPeak", "IE_Ratio", "Trigger", "Trigger_Source", "Wave_T0", "Wave_Rate", "Alert"]
+    "breaths": ["BreathNumber", "Cdyn", "VTe", "Real_VTe", "Real_Cdyn", "Real_Ppeak", "Real_VTi", "EdiPeak", "IE_Ratio", "Trigger", "Trigger_Source", "Wave_T0", "Wave_Rate", "Alert"]
   },
 
-  "breath_summary": ["Trigger", "Real_VTe", "Real_VTi", "Real_Ppeak", "EdiPeak", "IE_Ratio", "VTe", "Cdyn"],
+  "breath_summary": ["Trigger", "Real_VTe", "Real_VTi", "Real_Ppeak", "Real_Cdyn", "EdiPeak", "IE_Ratio", "VTe", "Cdyn"],
 
   "outputs": {
     "waves": [
@@ -32,6 +32,7 @@
       { "name": "Real_VTe",   "label": "VTe",                    "unit": "mL",       "format": "{:.0f}" },
       { "name": "Real_VTi",   "label": "VTi",                    "unit": "mL",       "format": "{:.0f}" },
       { "name": "Real_Ppeak", "label": "Ppeak",                  "unit": "cmH2O",    "format": "{:.0f}" },
+      { "name": "Real_Cdyn",  "label": "Cdyn",                   "unit": "mL/cmH2O", "format": "{:.1f}" },
       { "name": "EdiPeak",    "label": "Edi peak",               "unit": "µV",       "format": "{:.1f}" },
       { "name": "IE_Ratio",   "label": "Ti/Ttot",                                    "format": "{:.2f}" },
       { "name": "VTe",        "label": "VTe (displayed)",        "unit": "mL",       "format": "{:.0f}" },

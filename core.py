@@ -490,6 +490,10 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
    
    # Get VTi, VTe of the next breath (VTi etc. change midway, so take the first value; it reflects the actual tidal volume)
     df['Real_VTe'] = Shift_Values(df, "VTe")
+    # 0.2.0: Cdyn is shown with the same delay as VTe (updated at the start of the next breath), so the value at the start
+    # of the next breath is this breath's Cdyn ("***" -> NaN)
+    if "Cdyn" in df.columns:
+        df["Real_Cdyn"] = Shift_Values(df.assign(Cdyn=pd.to_numeric(df["Cdyn"], errors="coerce")), "Cdyn")
     # Ppeak / VTi are also updated at the end of a breath (= start of the next breath), so the value at the start of the next breath is that breath's value.
     # Used for estimating waveform axis scales (ExtractWaves._estimate_scales)
     for key in ("Ppeak", "VTi"):
@@ -577,7 +581,7 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
             f.write(f"{w}\n")
         f.write("\n")
         f.write("[fields]\n")
-        for field in ["Cdyn", "VTe", "EdiPeak", "Real_VTe", "Real_Ppeak", "Real_VTi", "Trigger", "Trigger_Source", "Alert"]:
+        for field in ["Cdyn", "VTe", "EdiPeak", "Real_VTe", "Real_Cdyn", "Real_Ppeak", "Real_VTi", "Trigger", "Trigger_Source", "Alert"]:
             f.write(f"{field}\n")
 
     # Save scale_meta.json (Engine-specific scale adjustment settings: step width / unit / symmetry).
