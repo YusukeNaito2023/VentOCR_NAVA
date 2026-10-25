@@ -25,6 +25,7 @@ Results change (breath boundaries, waveforms, new columns). Same approach as the
 - The Triggered ROI (patient-trigger icon) is no longer OCRed: up to 0.1.x it was read with readtext every 10 frames, which never returned text (all NaN) and was not used.
 
 ### Other
+- IE_Ratio (Ti/Ttot) of a breath is the last value read in the breath (it was the first frame's). The display sometimes updates 1-2 frames after Cdyn / VTe, so the first frame often showed the previous breath's value. On the one-hour Servo-U recording, agreement with the ventilator export rose from 73.6% to 81.6% (direct-decode frames: 69.0% to 72.5%).
 - EdiPeak preprocessing runs only for ROIs that are OCRed (the diff gating compares the ROI before preprocessing).
 - Settings removed: similarity_thresh, sampling_size, detect_sweep_line.
 - Alert Abnormal: the image of the breath is a pop-up or another screen (no waveform).

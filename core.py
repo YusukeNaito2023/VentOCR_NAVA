@@ -460,6 +460,15 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     # Update all rows with the representative value
     df_breath["VTe"] = df_breath["BreathNumber"].map(last_peak_per_breath)
 
+    # IE_Ratio (Ti/Ttot): last non-NaN value of the breath. The display sometimes updates 1-2 frames after Cdyn / VTe,
+    # so up to 0.2.0 development the first frame of a breath often still showed the previous breath's value.
+    if "IE_Ratio" in df.columns:
+        last_ie_per_breath = (
+            df.groupby("BreathNumber")["IE_Ratio"]
+            .apply(lambda s: s.dropna().iloc[-1] if not s.dropna().empty else np.nan)
+        )
+        df_breath["IE_Ratio"] = df_breath["BreathNumber"].map(last_ie_per_breath)
+
 
 
 
