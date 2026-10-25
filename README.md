@@ -2,39 +2,41 @@
 
 ## Version
 
-0.1.2（CHANGELOG.md）
+0.1.2 (see CHANGELOG.md)
 
-### Changes in v1.5
+### Changes in 0.1.1 and 0.1.2
 
-- 解析の高速化（結果は v1.4 と同じ）: 読む範囲だけをグレースケール化・縮小する、EasyOCR の Reader を使い回す、
-  後処理で使う画像を番号の小さい順に開く。1 時間の動画で v1.4 より 36% 速い。
-- 詳細は CHANGELOG.md
+- 0.1.2: added the output declaration `outputs` to manifest.json (waves, breath_values, alerts; VentOCR 0.6.2 and later). The engine no longer uses Japanese (labels, messages, README, comments).
+- 0.1.1: fixed analyses stopping with a KeyError when there are two or fewer breath boundaries (for example a video from another ventilator); such videos now finish with zero breaths.
+
+### Changes in 0.1.0 (formerly v1.5.0)
+
+- Faster analysis (same results as v1.4): grayscale and downscale only the regions that are read, reuse the EasyOCR Reader, and open the images used in post-processing in ascending frame order. 36% faster than v1.4 on a one-hour video.
+- The engine key became `nava_ventocr` (earlier versions used `nava_ventocr_v1_X`) and versions are numbered 0.X.Y.
+- Details in CHANGELOG.md
 
 ### Changes in v1.4
 
-- 解析の高速化: 後処理で全フレームの JPEG を読むのをやめた（engine_api 3）。異常フレーム（ポップアップなど）は initial_ocr の中で
-  メモリにあるフレームで判定し、Frames.csv の `Abnormal` 列に記録する。
-- 波形を読む開始・終了画像が Abnormal の呼吸だけ波形を書き出さない（v1.3 までは呼吸の途中に1枚でもあれば書き出さなかった）。
-- 秒とフレーム数の換算に `GS.FPS` を使う（10 fps では v1.3 と同じ結果）。
-- 詳細は CHANGELOG.md
+- Faster analysis: post-processing no longer reads the JPEG of every frame (engine_api 3). Abnormal frames (pop-ups, etc.) are detected inside initial_ocr from the frames in memory and recorded in the `Abnormal` column of Frames.csv.
+- A breath's waveform is skipped only when the start or end image used to read it is Abnormal (up to v1.3, a single Abnormal frame anywhere in the breath skipped it).
+- Seconds are converted to frame counts with `GS.FPS` (same results as v1.3 at 10 fps).
+- Details in CHANGELOG.md
 
 ### Changes in v1.3
 
-- 波形の点の選び方を変更（`ExtractWaves._extract_waveform`）。v1.2 は列ごとに「色相が最も近い1画素」を
-  採用しており、急峻な箇所（1列に縦線がある所）で選ぶ高さが偶然で決まり、画面に無いスパイクが出ていた。
-  v1.3 は列ごとに「線が通った範囲」を取り、呼吸全体で最適な経路を引き、V字の谷・山の先端は残す。
-- Flow の目盛りの推定で、Flow が急に変わる区間を当てはめから除き、`FLOW_GAIN` を 1.06 → 1.05 に。
-- 平滑化オプション（smoothing）が効いていなかった不具合を修正（既定は OFF のまま）。
-- 波形 CSV を呼吸の範囲（吸気の始まり〜次の吸気の始まり）に切り詰める（`trim_to_breath`、既定 ON）。
-  前の呼吸の呼気の終わりと次の呼吸の立ち上がりを除き、時刻は Breaths.csv の Wave_T0 / Wave_Rate で保つ。
-- 詳細は CHANGELOG.md
+- Changed how waveform points are chosen (`ExtractWaves._extract_waveform`). v1.2 took the single pixel with the closest hue in each column, so at steep transitions (a vertical line in one column) the chosen height was essentially random and produced spikes that are not on the screen.
+  v1.3 takes the vertical extent of the trace in each column, draws the optimal path over the whole breath, and keeps the tips of V-shaped valleys and peaks.
+- The Flow scale estimate excludes segments where Flow changes steeply, and `FLOW_GAIN` changed from 1.06 to 1.05.
+- Fixed the smoothing option having no effect (still OFF by default).
+- Waveform CSVs are trimmed to the breath (inspiration onset to the next inspiration onset; `trim_to_breath`, ON by default).
+  The end of the previous breath's expiration and the rise of the next breath are removed; timing is kept with Wave_T0 / Wave_Rate in Breaths.csv.
+- Details in CHANGELOG.md
 
 ### Changes in v1.2
 
-- 波形色のマッチングを BGR ユークリッド距離から **HSV(色相)ベース** に変更。
-  色相は明度・彩度の低下に強いため、高解像度動画(1920x1080)を 1280x720 へ縮小した際に
-  アンチエイリアスで暗く混色していた **Pressure の急峻な立ち上がり** を欠損なく検出できる。
-  ROI・色定義・後処理インターフェースは v1.1 と互換。
+- Waveform color matching changed from BGR Euclidean distance to **HSV (hue) based** matching.
+  Hue is robust to lower brightness and saturation, so the **steep rise of Pressure**, which became dark and blended by anti-aliasing when a high-resolution video (1920x1080) was downscaled to 1280x720, is detected without gaps.
+  ROIs, color definitions and the post-processing interface are compatible with v1.1.
 
 ## Overview
 
@@ -200,16 +202,16 @@ Real_VTe
 
 ---
 
-#### 4.1 AbnormalFrameDetector（initial_ocr の中）
+#### 4.1 AbnormalFrameDetector (inside initial_ocr)
 
-- 各フレームの `ROI_LIST_Abnormal_Detection` の範囲を、区間の黒でないフレームの中央値と比べる（平均差・標準偏差の差・ヒストグラム相関）
-- Frames.csv に記録:
+- Compares the `ROI_LIST_Abnormal_Detection` regions of each frame with the median of the non-black frames of the segment (mean difference, standard-deviation difference, histogram correlation)
+- Recorded in Frames.csv:
 
 ```
 Abnormal = 1
 ```
 
-- 波形を読む開始・終了画像が Abnormal の呼吸は波形を書き出さない
+- A breath whose start or end image (used to read the waveform) is Abnormal gets no waveform
 
 ---
 

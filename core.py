@@ -16,11 +16,11 @@ import threading
 ENGINE_VERSION = "0.1.2"
 VENTOCR_TESTED = "0.5.5"
 
-_GRAY_WEIGHTS = [0.114, 0.587, 0.299]   # v1.4 までの全画面のグレースケール化と同じ式（np.dot → uint8 に切り捨て）
+_GRAY_WEIGHTS = [0.114, 0.587, 0.299]   # Same formula as the full-frame grayscale conversion up to v1.4 (np.dot -> truncated to uint8)
 
 
 def _resize_period(src_wh, base_wh):
-    """縮小の周期（基準解像度の画素数）。1920→1280 は 3:2 なので 2。1〜16 で割り切れなければ None。"""
+    """Downscale period (in pixels at the base resolution). 1920->1280 is 3:2, so 2. None if not divisible within 1-16."""
     for p in range(1, 17):
         if all((p * s) % b == 0 for s, b in zip(src_wh, base_wh)):
             return p
@@ -28,11 +28,11 @@ def _resize_period(src_wh, base_wh):
 
 
 class _BaseFrame:
-    """フレームを基準解像度（Settings.BASE_RESOLUTION）で見る。frame[y1:y2, x1:x2] でその範囲だけを返す。
+    """View a frame at the base resolution (Settings.BASE_RESOLUTION). frame[y1:y2, x1:x2] returns only that region.
 
-    v1.5: v1.4 までは全画面を基準解像度へ縮小していた（1920x1080 で 1 フレーム約 8 ms。区間の処理の約 4 割）。
-    縮小率が有理数なら、周期にそろえた範囲を INTER_AREA で縮小すると、全画面を縮小したときと同じ画素になる。
-    周期にそろえられないとき（拡大を含む）は、v1.4 と同じく全画面を一度だけ縮小する。"""
+    v1.5: Up to v1.4 the whole frame was downscaled to the base resolution (about 8 ms per frame at 1920x1080; about 40% of segment processing time).
+    If the scale ratio is rational, downscaling a period-aligned region with INTER_AREA yields the same pixels as downscaling the whole frame.
+    When the region cannot be aligned to the period (including upscaling), the whole frame is downscaled once, as in v1.4."""
 
     def __init__(self, src):
         self.src = src
@@ -46,7 +46,7 @@ class _BaseFrame:
         self.sx, self.sy = w / base_w, h / base_h
 
     def mean(self):
-        """黒画面の判定用（縮小しても平均はほぼ変わらないので元の画像で求める）。"""
+        """For black-screen detection (downscaling barely changes the mean, so compute it on the original image)."""
         return float((self.full if self.full is not None else self.src).mean())
 
     def __getitem__(self, sl):
@@ -62,7 +62,7 @@ class _BaseFrame:
 
 
 class _GrayView:
-    """image[y1:y2, x1:x2] で、その範囲だけをグレースケールにする（v1.4 までは全画面を float64 で計算していた。1 フレーム約 8 ms）。"""
+    """Convert only image[y1:y2, x1:x2] to grayscale (up to v1.4 the whole frame was computed in float64; about 8 ms per frame)."""
 
     def __init__(self, frame):
         self.frame = frame
@@ -75,7 +75,7 @@ _EASYOCR_LOCKFILE = "easyocr_init.lock"
 
 
 def _get_easyocr_model_dir():
-    # Engineごとではなく、ユーザー共通の永続保存先にする
+    # Use a persistent storage location shared per user, not per Engine
     model_dir = os.path.join(".", "_runtime_models", "easyocr")
     os.makedirs(model_dir, exist_ok=True)
     return model_dir
@@ -86,7 +86,7 @@ def _easyocr_model_ready(model_dir: str) -> bool:
     if not p.exists():
         return False
 
-    # EasyOCRの検出/認識モデルが1つでも入っていれば最低限OKとみなす
+    # Consider it minimally OK if at least one EasyOCR detection/recognition model is present
     patterns = [
         "craft*.pth",
         "dbnet*.pth",
@@ -127,12 +127,12 @@ def _release_easyocr_file_lock(fd, lock_path: str):
         pass
 
 
-_READER_CACHE = {}  # v1.5: (gpu, モデルのフォルダ) -> Reader
+_READER_CACHE = {}  # v1.5: (gpu, model folder) -> Reader
 
 
 def _ensure_easyocr_reader_ready(gpu_enabled: bool):
-    """v1.5: 同じプロセス（アプリの並列のワーカー）では Reader を使い回す。
-    v1.4 までは区間ごとにモデルを読み直していた（1 回約 1.8 秒。1 時間の動画で 60 回）。"""
+    """v1.5: Reuse the Reader within the same process (the app's parallel workers).
+    Up to v1.4 the models were reloaded for every segment (about 1.8 s each; 60 times for a 1-hour video)."""
     key = (bool(gpu_enabled), _get_easyocr_model_dir())
     if key not in _READER_CACHE:
         _READER_CACHE[key] = _create_easyocr_reader(gpu_enabled)
@@ -142,7 +142,7 @@ def _ensure_easyocr_reader_ready(gpu_enabled: bool):
 def _create_easyocr_reader(gpu_enabled: bool):
     model_dir = _get_easyocr_model_dir()
 
-    # まず完成済みなら即使用
+    # If already complete, use it immediately
     if _easyocr_model_ready(model_dir):
         print(f"[EasyOCR] using existing model: {model_dir}")
         return Reader(
@@ -152,10 +152,10 @@ def _create_easyocr_reader(gpu_enabled: bool):
             download_enabled=True
         )
 
-    # 未準備ならプロセス間ロック
+    # If not ready, take an inter-process lock
     fd, lock_path = _acquire_easyocr_file_lock(model_dir)
     try:
-        # 待っている間に他プロセスが終わらせた可能性があるので再確認
+        # Another process may have finished while we were waiting, so check again
         if not _easyocr_model_ready(model_dir):
             print(f"[EasyOCR] model not found. downloading to: {model_dir}")
             Reader(
@@ -178,14 +178,14 @@ def _create_easyocr_reader(gpu_enabled: bool):
 
 def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=None, frames_dir=None):
     """
-    v1.1: カラーフレームジェネレータ対応。
-    - gc.collect()をループ内から除去
-    - ROIバッチOCR
-    - カラーフレームをジェネレータで受け取り、内部でグレースケール変換
+    v1.1: Supports a color frame generator.
+    - Removed gc.collect() from inside the loop
+    - Batch OCR of ROIs
+    - Receives color frames from a generator and converts them to grayscale internally
 
     Args:
-        frames: カラーフレームのジェネレータ (BGR, numpy配列)。list化禁止。
-        frames_dir: str (未使用、インターフェース互換のため)
+        frames: Generator of color frames (BGR, numpy arrays). Do not convert to a list.
+        frames_dir: str (unused; kept for interface compatibility)
     """
     from easyocr import Reader
 
@@ -194,12 +194,12 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     similarity_thresh = settings["initial_ocr"]["similarity_thresh"]
     gpu_enabled = settings["initial_ocr"]["use_gpu"]
 
-    # 差分ゲーティング設定（未設定の古いengine_optionsでも動くようdefault付き）
+    # Diff-gating settings (with defaults so that old engine_options without them still work)
     _io = settings["initial_ocr"]
     diff_gating = _io.get("diff_gating", True)
     diff_thresh = _io.get("diff_thresh", 2.0)
-    diff_thresh_cdyn = _io.get("diff_thresh_cdyn", 0.5)  # Cdynは安全側で低閾値
-    # recognizeのconfがこの閾値未満ならreadtext(検出あり)にフォールバック
+    diff_thresh_cdyn = _io.get("diff_thresh_cdyn", 0.5)  # Low threshold for Cdyn, to stay on the safe side
+    # If recognize's conf is below this threshold, fall back to readtext (with detection)
     recognize_conf_fallback = _io.get("recognize_conf_fallback", 0.5)
 
     reader = _ensure_easyocr_reader_ready(gpu_enabled)
@@ -208,24 +208,24 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     # ---- Batch OCR configuration ----
     OCR_BATCH_SIZE = 16
 
-    # 検出スキップ(recognize)対象: 単一数値ROI。
-    # IE_Ratio/Triggeredは複数トークン/検出が有効なのでreadtextのまま残す。
+    # Targets for skipping detection (recognize): single-number ROIs.
+    # IE_Ratio/Triggered keep readtext because they have multiple tokens / detection is useful.
     RECOGNIZE_KEYS = {"VTe", "EdiPeak", "Cdyn", "Ppeak", "VTi"}
-    # 差分ゲーティング対象: 毎フレームOCRしている数値表示ROI
+    # Diff-gating targets: numeric display ROIs OCRed every frame
     GATED_KEYS = {"VTe", "EdiPeak", "Cdyn", "IE_Ratio", "Ppeak", "VTi"}
-    # 毎フレームOCRするROI（それ以外は sampling_size ごと）。値は呼吸ごとにしか変わらないので差分ゲーティングで大半を省ける
+    # ROIs OCRed every frame (others every sampling_size). Values change only per breath, so diff gating skips most of them
     EVERY_FRAME_KEYS = {"Cdyn", "IE_Ratio", "VTe", "EdiPeak", "Ppeak", "VTi"}
 
     Data = []
     frame_count = 0
 
-    # ヒストグラム比較用画像読み込み
+    # Load the image for histogram comparison
     x, y, w, h = Settings.ROIs["Triggered"]
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     image_path = os.path.join(BASE_DIR, "sample_frame.jpg")
     background_img = cv2.imread(image_path)
     if background_img is None:
-        raise FileNotFoundError(f"背景画像が見つかりません: {image_path}")
+        raise FileNotFoundError(f"Background image not found: {image_path}")
     gray_background_image = cv2.cvtColor(background_img, cv2.COLOR_BGR2GRAY)
     background_hist = cv2.calcHist([gray_background_image[y:y+h, x:x+w]], [0], None, [256], [0, 256])
     cv2.normalize(background_hist, background_hist, 0, 1, cv2.NORM_MINMAX)
@@ -244,13 +244,13 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
     pending_frames = []
     pending_start_frame = 0
 
-    # 差分ゲーティング用の状態（ROIキーごと）
-    prev_roi = {}        # key -> 最後にOCRした時のROI(ndarray)
-    last_ocr_idx = {}    # key -> そのROIをOCRしたpending_frames index
+    # State for diff gating (per ROI key)
+    prev_roi = {}        # key -> ROI (ndarray) at the last OCR
+    last_ocr_idx = {}    # key -> pending_frames index where that ROI was OCRed
     reuse_links = []     # (target_frame_rel, key, source_frame_rel)
 
-    # v1.4: 異常フレーム（ポップアップなど）はここで判定して Frames.csv の列にする。
-    # v1.3 までは post_ocr の DetectAbnormalFrames が全フレームの JPEG を読み直していた
+    # v1.4: Abnormal frames (pop-ups, etc.) are detected here and become a column in Frames.csv.
+    # Up to v1.3, DetectAbnormalFrames in post_ocr re-read the JPEGs of all frames
     abnormal_detector = ew.AbnormalFrameDetector()
 
     def _flush_batch():
@@ -265,11 +265,11 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
         results = []
         for roi_img, (frame_rel, key, pp_type) in zip(batch_rois, batch_meta):
             if key in RECOGNIZE_KEYS:
-                # 検出(CRAFT)をスキップし認識(CRNN)のみ実行。ROI全体を1行として読む
+                # Skip detection (CRAFT) and run recognition (CRNN) only. Read the whole ROI as one line
                 rc = reader.recognize(roi_img)
                 conf_rc = max((c for _, _, c in rc), default=0.0)
-                # 低信頼時はreadtext(検出あり)にフォールバックし信頼度の高い方を採用。
-                # recognizeはタイトな数字ROIで稀に端のノイズを桁と誤認する（その時conf低）ため。
+                # On low confidence, fall back to readtext (with detection) and adopt the result with higher confidence.
+                # Because recognize occasionally mistakes edge noise in tight numeric ROIs for a digit (conf is low then).
                 if conf_rc < recognize_conf_fallback:
                     rd = reader.readtext(roi_img)
                     conf_rd = max((c for _, _, c in rd), default=0.0)
@@ -316,17 +316,17 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
         cdyn_folder = f"./temp/Cdyn_ROIs_{subfolder}"
         os.makedirs(cdyn_folder, exist_ok=True)
 
-        # カラーフレームジェネレータから順次受け取り、グレースケール変換
+        # Receive frames one by one from the color frame generator and convert to grayscale
         for color_frame in frames:
-            # 解像度非依存化: ROI定義の基準解像度(Settings.BASE_RESOLUTION)に正規化する。
-            # v1.5: 全画面は縮小せず、使う範囲だけを縮小・グレースケール化する（_BaseFrame。結果は全画面で計算したものと同じ）
+            # Resolution independence: normalize to the base resolution of the ROI definitions (Settings.BASE_RESOLUTION).
+            # v1.5: Do not downscale the whole frame; downscale/grayscale only the regions used (_BaseFrame; results are identical to full-frame computation)
             color_frame = _BaseFrame(color_frame)
             image = _GrayView(color_frame)
 
             frame_rel = len(pending_frames)
             extracted_values = {"_frame": frame_count}
             pending_frames.append(extracted_values)
-            abnormal_detector.add(color_frame)   # v1.4: 異常フレームの判定（Data と同じ順）
+            abnormal_detector.add(color_frame)   # v1.4: abnormal-frame detection (same order as Data)
 
             for key, (x, y, w, h) in roi_items:
                 if key in skip_keys:
@@ -341,8 +341,8 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                     if key == "EdiPeak":
                         roi = _preprocess_for_edi(roi)
 
-                    # 差分ゲーティング: 前回OCR時のROIとほぼ同じならOCRを省略し、
-                    # 前回OCRしたフレームの結果をfinalize時にコピーする
+                    # Diff gating: if the ROI is nearly identical to the one at the last OCR, skip OCR and
+                    # copy the result of the last OCRed frame at finalize time
                     if diff_gating and key in GATED_KEYS and key in prev_roi \
                             and prev_roi[key].shape == roi.shape:
                         thresh = diff_thresh_cdyn if key == "Cdyn" else diff_thresh
@@ -375,8 +375,8 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
         # Flush remaining batch
         _flush_batch()
 
-        # 差分ゲーティングで再利用したフレームに、参照元フレームのOCR結果を反映。
-        # pending_framesはセグメント終端まで保持されるため、参照元の値は確定済み。
+        # For frames reused by diff gating, apply the OCR result of the source frame.
+        # pending_frames are kept until the end of the segment, so the source values are already final.
         for tgt, key, src in reuse_links:
             ev_t = pending_frames[tgt]
             ev_s = pending_frames[src]
@@ -397,61 +397,61 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
         
 def post_ocr(df, Analyze_Id, user_ID, settings={}) :
 
-    # post_ocr 内の各サブ段階を overall 進捗へ流すヘルパー（停止しているように見える問題対策）。
-    # 既存の ExtractWaves._report_progress（progress_io ベース・ベストエフォート）を流用する。
+    # Helper that forwards each sub-stage inside post_ocr to the overall progress (so it does not look stalled).
+    # Reuses the existing ExtractWaves._report_progress (progress_io based, best effort).
     def _pp(msg, cur=0, tot=0):
         try:
             ew._report_progress(user_ID, Analyze_Id, message=msg, current=cur, total=tot)
         except Exception:
             pass
 
-    _pp(f"post_ocr: 呼吸番号を付与中 ({len(df)} rows)")
+    _pp(f"post_ocr: assigning breath numbers ({len(df)} rows)")
     df["IE_Ratio"] = df["IE_Ratio_raw"].apply(parse_IE_ratio)
 
 
-    df = CreateBreathNumber(df) # Cdynの値を前後の値などで修正し、その後Breath Numberを作成
+    df = CreateBreathNumber(df) # Correct Cdyn values using neighboring values, etc., then create Breath Number
 
         
-    _pp("post_ocr: 時刻・呼吸代表値を集計中")
-    # 動画でのおおよその時間をFPSをもとにDFに書き込み
+    _pp("post_ocr: aggregating times and per-breath representative values")
+    # Write the approximate time in the video into the DF based on FPS
     frame_interval = 1 / GS.FPS
     df["Time"] = pd.to_timedelta(df["Frame"] * frame_interval, unit="s")
     df["Time"] = df["Time"].apply(lambda x: f"{x.seconds//3600}:{(x.seconds%3600)//60:02}:{x.seconds%60:02}:{int(x.microseconds/10000):02}")
 
    
-   # 次の呼吸のVTi, VTeを取得（VTiなどは途中で変わるので一番初めの値を取得。これが実際の換気量を反映している）
+   # Get VTi, VTe of the next breath (VTi etc. change midway, so take the first value; it reflects the actual tidal volume)
     df['Real_VTe'] = Shift_Values(df, "VTe")
-    # Ppeak / VTi も呼吸の終わり（=次の呼吸の先頭）で更新されるので、次の呼吸の先頭の値がその呼吸の値。
-    # 波形の軸スケール推定（ExtractWaves._estimate_scales）に使う
+    # Ppeak / VTi are also updated at the end of a breath (= start of the next breath), so the value at the start of the next breath is that breath's value.
+    # Used for estimating waveform axis scales (ExtractWaves._estimate_scales)
     for key in ("Ppeak", "VTi"):
         if key in df.columns:
             df[key] = pd.to_numeric(df[key], errors="coerce")
             df[f"Real_{key}"] = Shift_Values(df, key)
 
-    # 1呼吸ごとのデータフレームも作成（v1.4: 異常判定の列は先頭フレームだけの値になるので Breaths.csv に入れない）
+    # Also create a per-breath dataframe (v1.4: abnormal-detection columns would only hold the first frame's value, so they are not put in Breaths.csv)
     df_breath = df.loc[df.groupby('BreathNumber')['Frame'].idxmin()]
     df_breath = df_breath.drop(columns=["Abnormal", "MeanDiff", "StdDiff", "HistCorr"], errors="ignore")
 
 
-    # Edi Peakの補完
-    # 各BreathNumberごとに「最後に出てきた非NaNのEdiPeak」を取得
+    # Fill in Edi Peak
+    # For each BreathNumber, get the "last non-NaN EdiPeak that appeared"
     last_peak_per_breath = (
         df.groupby("BreathNumber")["EdiPeak"]
         .apply(lambda s: s.dropna().iloc[-1] if not s.dropna().empty else np.nan)
     )
 
-    # 代表値で全行を更新
+    # Update all rows with the representative value
     df_breath["EdiPeak"] = df_breath["BreathNumber"].map(last_peak_per_breath)
 
 
-    # Vteの補完
-    # 各BreathNumberごとに「最後に出てきた非NaNのVTe」を取得
+    # Fill in VTe
+    # For each BreathNumber, get the "last non-NaN VTe that appeared"
     last_peak_per_breath = (
         df.groupby("BreathNumber")["VTe"]
         .apply(lambda s: s.dropna().iloc[-1] if not s.dropna().empty else np.nan)
     )
 
-    # 代表値で全行を更新
+    # Update all rows with the representative value
     df_breath["VTe"] = df_breath["BreathNumber"].map(last_peak_per_breath)
 
 
@@ -460,10 +460,10 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
 
 
     ###########################################################################################
-    # １呼吸ごとの波形解析
+    # Per-breath waveform analysis
     base_dir = os.path.join(".", user_ID)
 
-    # v1.4: Abnormal 列は initial_ocr が付ける（全フレームの JPEG を読み直さない）
+    # v1.4: The Abnormal column is set by initial_ocr (JPEGs of all frames are not re-read)
     df_frames = df
     if "Abnormal" not in df_frames:
         df_frames["Abnormal"] = 0
@@ -473,14 +473,14 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     df_frames.to_csv("frames.csv")
     df_breath.to_csv("breath.csv")
 
-    # Abnormalがついたものは除外しそれ以外は個別のCSVに書き出し
-    _pp(f"post_ocr: 呼吸ごとのCSVを書き出し中 ({len(df_breath)} breaths)")
+    # Exclude breaths marked Abnormal and write the rest to individual CSVs
+    _pp(f"post_ocr: writing per-breath CSVs ({len(df_breath)} breaths)")
     print(f"[post_ocr] BreathsToCSVs starting ({len(df_breath)} breaths)...")
-    # 軸スケールは Real_Ppeak / Real_VTi と波形から推定する（軸の数字はOCRしないので reader は不要）
+    # Axis scales are estimated from Real_Ppeak / Real_VTi and the waveforms (axis numbers are not OCRed, so no reader is needed)
     Effective_Breaths, df_breath = ew.BreathsToCSVs(df_breath,df_frames,GS.Dir_Frames(user_ID),GS.Dir_BreathCSVs(user_ID), user_ID, analyze_id=Analyze_Id, settings=settings)
     print(f"[post_ocr] BreathsToCSVs done ({Effective_Breaths} effective breaths)")
 
-    # Detect Sweep Line（既定OFF）: 有効時は各フレームに掃引カーソルを描き込んで上書き保存する（診断用）
+    # Detect Sweep Line (off by default): when enabled, draws the sweep cursor on each frame and overwrites it (for diagnostics)
     if settings.get("post_ocr", {}).get("detect_sweep_line", False):
         print("[post_ocr] Detect Sweep Line: annotating frames with sweep cursor...")
         _n_sweep = ew.annotate_sweep_lines(df_frames, GS.Dir_Frames(user_ID))
@@ -489,10 +489,10 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
 
  
 
-    # fields.txt を作成（セクション形式）
-    # 保存先は Main.py のアーカイブ処理と同じ Archive_Dir_For を使う。
-    # 別保存先ディスク(VentOCR_Archive_*)選択時に fields.txt/scale_meta.json が
-    # 既定(Temporary)側へ取り残されて Label がグラフを描けない不具合を防ぐ。
+    # Create fields.txt (section format)
+    # The destination uses Archive_Dir_For, same as the archive processing in Main.py.
+    # Prevents a bug where, when a separate destination disk (VentOCR_Archive_*) is selected, fields.txt/scale_meta.json
+    # are left behind on the default (Temporary) side and Label cannot draw graphs.
     archive_dir = GS.Archive_Dir_For(user_ID, Analyze_Id)
     os.makedirs(archive_dir, exist_ok=True)
 
@@ -506,14 +506,14 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
         for field in ["Cdyn", "VTe", "EdiPeak", "Real_VTe", "Real_VTe2", "Real_Ppeak", "Real_VTi", "Alert"]:
             f.write(f"{field}\n")
 
-    # scale_meta.json を保存（Engine特有のスケール調整設定: ステップ幅/単位/対称性）。
-    # Label(Flask/JS) がArchiveから読み、+/- ボタンのステップ等をEngineごとに適用する。
+    # Save scale_meta.json (Engine-specific scale adjustment settings: step width / unit / symmetry).
+    # Label (Flask/JS) reads it from the Archive and applies per-Engine settings such as the +/- button steps.
     try:
         import json as _json
         with open(os.path.join(archive_dir, "scale_meta.json"), "w", encoding="utf-8") as f:
             _json.dump(ew.scale_meta(), f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"[post_ocr] scale_meta.json 書き出し失敗: {e}")
+        print(f"[post_ocr] failed to write scale_meta.json: {e}")
 
     return df_frames, df_breath
 
@@ -560,36 +560,36 @@ def read_text(reader, roi):
 
 def normalize_ie_ratio(raw_texts: list[str], numeric_parts: list[str]) -> str:
     """
-    OCR生文字から IE 表記を厳密正規化する。
-      - 出力は必ず '1:X' または 'X:1'
-      - X は 1 以上、かつ小数点以下 1 桁（四捨五入）
-    想定誤読:
+    Strictly normalize the IE notation from raw OCR text.
+      - Output is always '1:X' or 'X:1'
+      - X is at least 1, with 1 decimal place (rounded)
+    Expected misreads:
       '1 :.21'→'1:2.1', '1.21'→'1:2.1', '1.2'→'1:2.0', '1.2.0'→'1:2.0',
       '01:02.1'→'1:2.1', 'T:17'→'1:1.7', 'E.17'→'1:1.7', '1, 2.2'→'1:2.2'
     """
     import re
 
-    # 1) テキスト正規化
+    # 1) Text normalization
     s = " ".join(raw_texts)
     s = s.upper()
     s = (s.replace("：", ":")
            .replace(",", ":")
            .replace("I", "1").replace("L", "1").replace("T", "1"))
-    s = re.sub(r"\bE[.:]?", "1:", s)      # 例: 'E.17' → '1:17'
+    s = re.sub(r"\bE[.:]?", "1:", s)      # e.g. 'E.17' -> '1:17'
     s = re.sub(r"\s+", "", s)
 
-    # 2) 片側トークンを数値化する補助
+    # 2) Helper to convert a one-side token to a number
     def side_to_float(tok: str) -> float | None:
         tok = re.sub(r"[^0-9.]", "", tok)
         if tok == "":
             return None
-        # ドットが2つ以上（例: '2.0.0'）→ 最初の桁＋残りを小数部化
+        # Two or more dots (e.g. '2.0.0') -> first digit + the rest as the fractional part
         if tok.count(".") >= 2:
             digits = tok.replace(".", "")
             if len(digits) == 1:
                 return float(f"{digits}.0")
             return float(f"{digits[0]}.{digits[1:]}")
-        # 先頭ドット（例: '.21'）→ 小数点左 1 桁落ちとみなし '2.1'
+        # Leading dot (e.g. '.21') -> treat as a lost digit left of the decimal point -> '2.1'
         if tok.startswith("."):
             d = tok[1:]
             if d == "":
@@ -597,16 +597,16 @@ def normalize_ie_ratio(raw_texts: list[str], numeric_parts: list[str]) -> str:
             if len(d) == 1:
                 return float(f"{d}.0")
             return float(f"{d[0]}.{d[1:]}")
-        # ドット無し 2 桁以上（例: '17'）→ '1.7'
+        # No dot, 2+ digits (e.g. '17') -> '1.7'
         if "." not in tok and len(tok) >= 2:
             return float(f"{tok[0]}.{tok[1:]}")
-        # 1 桁のみ（例: '2'）→ '2.0'
+        # Single digit only (e.g. '2') -> '2.0'
         if "." not in tok:
             return float(f"{tok}.0")
-        # それ以外は素直に float
+        # Otherwise just float
         return float(tok)
 
-    # 3) a:b 形式
+    # 3) a:b format
     if ":" in s:
         a_raw, b_raw = s.split(":", 1)
         a = side_to_float(a_raw)
@@ -614,12 +614,12 @@ def normalize_ie_ratio(raw_texts: list[str], numeric_parts: list[str]) -> str:
         if a is None or b is None or a <= 0 or b <= 0:
             return ""
 
-    # 4) コロン無しの代表パターン
+    # 4) Typical patterns without a colon
     else:
         only = re.sub(r"[^0-9.]", "", s)
         if only == "":
             return ""
-        # '1.21' / '1.2' / '1.2.0' 系
+        # '1.21' / '1.2' / '1.2.0' style
         m = re.fullmatch(r"1\.(\d+)(?:\.(\d+))?", only)
         if m:
             d1 = m.group(1)
@@ -635,13 +635,13 @@ def normalize_ie_ratio(raw_texts: list[str], numeric_parts: list[str]) -> str:
         # '5.1' → 5.1 : 1
         elif re.fullmatch(r"\d+\.\d+", only):
             a = float(only); b = 1.0
-        # '0.xx'（割合表示）→ 比に復元し 1:X or X:1 にする
+        # '0.xx' (ratio display) -> restore to a ratio as 1:X or X:1
         elif re.fullmatch(r"0\.\d+", only):
             p = float(only)
             if p <= 0 or p >= 1:
                 return ""
             X = (1.0 - p) / p  # = E/I
-            # X≥1 で表記（1:X または X:1）
+            # Express with X>=1 (1:X or X:1)
             if X >= 1.0:
                 a, b = 1.0, X
             else:
@@ -653,8 +653,8 @@ def normalize_ie_ratio(raw_texts: list[str], numeric_parts: list[str]) -> str:
         else:
             return ""
 
-    # 5) ここから「1:X  or  X:1」・Xは1桁小数・X≥1 に強制
-    #    （実値 a:b をスケールして一方を1に、もう一方を≥1に）
+    # 5) From here, force "1:X or X:1", X with 1 decimal place, X>=1
+    #    (scale the actual a:b so one side is 1 and the other is >=1)
     if a <= 0 or b <= 0:
         return ""
     if a <= b:
@@ -667,21 +667,21 @@ def normalize_ie_ratio(raw_texts: list[str], numeric_parts: list[str]) -> str:
         return f"{X:.1f}:1"
 
 def Shift_Values(df, column):
-    # 次の呼吸番号の最初の5フレームを抽出して最頻値を取得
+    # Take the first 5 frames of the next breath number and get the mode
     mode_values = {}
     grouped = df.groupby('BreathNumber')
 
     for breath, group in grouped:
-        # 各呼吸の先頭5フレームを取得（5未満の場合はそのまま）
+        # Take the first 5 frames of each breath (as-is if fewer than 5)
         first_values = group[column].head(5)
-        # 最頻値（mode）を計算（複数ある場合は最初を使用）
+        # Compute the mode (use the first if there are several)
         mode_val = first_values.mode()
         mode_values[breath] = mode_val.iloc[0] if not mode_val.empty else first_values.iloc[0]
 
-    # 次呼吸の最頻値を取得してシフト
+    # Get the mode of the next breath and shift
     next_values = pd.Series(mode_values).shift(-1)
 
-    # 各行に対応するReal_値をマッピング
+    # Map the corresponding Real_ value to each row
     return df['BreathNumber'].map(next_values)
 
 
@@ -691,13 +691,13 @@ def most_frequent(series):
 
 
 def _segment_by_cdyn(cdyn):
-    """Cdynの値変化で呼吸境界(BreathNumber)を作る。
-    連続するNaN(***＝Cdyn読取り不能)は「同一呼吸」とみなして束ねる。
-    pandasでは NaN != NaN が True のため、素朴な ne(shift) だと***呼吸が
-    1フレームずつ別セグメントに分裂し、後段の短呼吸マージで隣に吸収されて
-    消滅する。連続NaNを境界にしないことで、***呼吸を独立した1呼吸として保持する。"""
+    """Build breath boundaries (BreathNumber) from changes in the Cdyn value.
+    Consecutive NaNs (*** = Cdyn unreadable) are treated as the "same breath" and grouped.
+    In pandas NaN != NaN is True, so a naive ne(shift) splits a *** breath
+    into one segment per frame, which the later short-breath merge absorbs into neighbors so it
+    disappears. By not treating consecutive NaNs as boundaries, a *** breath is kept as one independent breath."""
     changed = cdyn.ne(cdyn.shift())
-    changed &= ~(cdyn.isna() & cdyn.shift().isna())   # 連続NaN同士は変化なし扱い
+    changed &= ~(cdyn.isna() & cdyn.shift().isna())   # consecutive NaNs are treated as no change
     return changed.cumsum()
 
 
@@ -712,7 +712,7 @@ def CreateBreathNumber(df,
     import pandas as pd
     import numpy as np
 
-    # v1.4: フレーム数は秒から GS.FPS で求める（engine_api 2 以降。10 fps では v1.3 と同じ 3 / 3 / 5 フレーム）
+    # v1.4: Frame counts are derived from seconds using GS.FPS (engine_api 2 or later; at 10 fps, the same 3 / 3 / 5 frames as v1.3)
     fps = GS.FPS
     if ignore_first_m_within_breath is None:
         ignore_first_m_within_breath = max(1, round(0.3 * fps))
@@ -725,10 +725,10 @@ def CreateBreathNumber(df,
     if "Alert" not in df.columns:
         df["Alert"] = ""
 
-    # ---- Step 1: Cdyn で大まかに分割 ----（連続NaN=***は1呼吸として束ねる）
+    # ---- Step 1: Rough split by Cdyn ---- (consecutive NaN = *** grouped as one breath)
     df["BreathNumber"] = _segment_by_cdyn(df["Cdyn"])
 
-    # ---- Step 1.5: 短い呼吸(<=0.5秒)を隣接に統合（既存：IEベースの判定）----
+    # ---- Step 1.5: Merge short breaths (<=0.5 s) into a neighbor (existing: IE-based decision) ----
     counts = df.groupby("BreathNumber").size()
     shorts = list(counts[counts <= short_frames].index)
     for b in shorts:
@@ -760,13 +760,13 @@ def CreateBreathNumber(df,
         df.loc[idxs, "BreathNumber"] = target_bn
         df.loc[idxs, "Cdyn"] = target_cd
 
-    # ---- 統合後に Cdyn が前後で一致していたらまとめる ----（同上：連続NaNは束ねる）
+    # ---- After merging, combine if Cdyn matches before and after ---- (same as above: consecutive NaNs are grouped)
     df["BreathNumber"] = _segment_by_cdyn(df["Cdyn"])
 
-    # ---- Step 2: IE_Ratio < IECutoff の変化で追加分割 ----
-    # 分割はCdyn一定の区間内でのみ起き、IEの「変化」が信頼できる時だけ採用する。
-    # （IE読取りの化け/空欄(0.0)との遷移や微小ジッタを境界と誤認すると、Cdyn一定の1呼吸を
-    #   割ってFragmentを量産する。実データ照合でIE駆動Fragment 12件を解消・Cdyn由来16件は保持。）
+    # ---- Step 2: Additional split on changes of IE_Ratio < IECutoff ----
+    # Splits occur only within constant-Cdyn intervals, and only when the IE "change" is reliable.
+    # (Mistaking transitions to/from garbled/blank (0.0) IE reads or tiny jitter for boundaries splits a constant-Cdyn breath
+    #   and mass-produces Fragments. Checked against real data: resolved 12 IE-driven Fragments, kept 16 Cdyn-derived ones.)
     base_breath = df["BreathNumber"].copy()
     split_flag = pd.Series(0, index=df.index, dtype=int)
 
@@ -789,17 +789,17 @@ def CreateBreathNumber(df,
             v = ier.loc[i]; pv = prev_ier.loc[i]
             if not (pd.notna(v) and v < IECutoff):
                 continue
-            # 化け/空欄IE(0.0)との遷移では割らない（読取りの出現/消失は呼吸境界ではない）
+            # Do not split on transitions to/from garbled/blank IE (0.0) (a read appearing/disappearing is not a breath boundary)
             if not (pd.notna(pv) and pv > 0 and v > 0):
                 continue
-            # 微小なIEジッタでは割らない（信頼できる変化幅のみ境界とみなす）
+            # Do not split on tiny IE jitter (only a reliable change magnitude counts as a boundary)
             if abs(v - pv) < ie_split_min_delta:
                 continue
             split_flag.loc[i] = 1
 
     df["BreathNumber"] = base_breath + split_flag.cumsum()
 
-    # ---- Step 3: IECutoff 以上なら前に統合（連鎖対応）----
+    # ---- Step 3: If IECutoff or above, merge into the previous one (handles chains) ----
     merged = True
     while merged:
         merged = False
@@ -821,7 +821,7 @@ def CreateBreathNumber(df,
             mapping = {old: new for new, old in enumerate(sorted(df["BreathNumber"].unique()), start=1)}
             df["BreathNumber"] = df["BreathNumber"].map(mapping)
 
-    # ========= NEW: Step 3.5 短呼吸の“後段マージ” (Cdyn基準) =========
+    # ========= NEW: Step 3.5 "late merge" of short breaths (Cdyn-based) =========
     def _cdyn_rep(s: pd.Series) -> float:
         s = pd.to_numeric(s, errors="coerce").dropna()
         if s.empty: return np.nan
@@ -831,7 +831,7 @@ def CreateBreathNumber(df,
     counts = df.groupby("BreathNumber").size()
     short_bns = [int(b) for b, n in counts.items() if n <= 5]
 
-    # 隣接探索に使う現在の並び
+    # Current ordering used for neighbor search
     def _neighbors(b):
         bnums = sorted(df["BreathNumber"].unique())
         if b not in bnums: return None, None
@@ -851,7 +851,7 @@ def CreateBreathNumber(df,
         prev_cdyn = _cdyn_rep(df.loc[df["BreathNumber"] == prev_b, "Cdyn"]) if prev_b is not None else np.nan
         next_cdyn = _cdyn_rep(df.loc[df["BreathNumber"] == next_b, "Cdyn"]) if next_b is not None else np.nan
 
-        # 決定ロジック（Cdyn）
+        # Decision logic (Cdyn)
         atol = 1e-6
         to_prev = prev_b is not None and np.isfinite(prev_cdyn) and np.isfinite(cur_cdyn) and np.isclose(prev_cdyn, cur_cdyn, rtol=0, atol=atol)
         to_next = next_b is not None and np.isfinite(next_cdyn) and np.isfinite(cur_cdyn) and np.isclose(next_cdyn, cur_cdyn, rtol=0, atol=atol)
@@ -861,40 +861,40 @@ def CreateBreathNumber(df,
         elif to_next and not to_prev:
             target = next_b; rep_cdyn = next_cdyn
         elif to_prev and to_next:
-            # 両側同値 → 長い方へ
+            # Same value on both sides -> merge into the longer one
             prev_len = int(counts.get(prev_b, 0)); next_len = int(counts.get(next_b, 0))
             if prev_len >= next_len:
                 target = prev_b; rep_cdyn = prev_cdyn
             else:
                 target = next_b; rep_cdyn = next_cdyn
         else:
-            # 近い側へ（|ΔCdyn|最小）。同値なら後側。
+            # Merge into the closer side (min |dCdyn|). If tied, the later side.
             candidates = []
             if prev_b is not None and np.isfinite(prev_cdyn): candidates.append(("prev", prev_b, abs(cur_cdyn - prev_cdyn), prev_cdyn))
             if next_b is not None and np.isfinite(next_cdyn): candidates.append(("next", next_b, abs(cur_cdyn - next_cdyn), next_cdyn))
             if candidates:
-                candidates.sort(key=lambda x: (x[2], 0 if x[0]=="next" else 1))  # 同差なら next を優先
+                candidates.sort(key=lambda x: (x[2], 0 if x[0]=="next" else 1))  # if the difference is equal, prefer next
                 _, target, _, rep_cdyn = candidates[0]
             else:
                 target = next_b if next_b is not None else prev_b
                 rep_cdyn = next_cdyn if next_b is not None else prev_cdyn
 
-        # マージ適用
+        # Apply the merge
         idxs = g.index
         df.loc[idxs, "BreathNumber"] = target
         if "Cdyn" in df.columns and np.isfinite(rep_cdyn):
             df.loc[idxs, "Cdyn"] = rep_cdyn
 
-        # counts は古いので更新（粗く再計算）
+        # counts are stale, so update them (rough recalculation)
         counts = df.groupby("BreathNumber").size()
 
-    # 後段マージ後の再連番
+    # Renumber after the late merge
     mapping = {old: new for new, old in enumerate(sorted(df["BreathNumber"].unique()), start=1)}
     df["BreathNumber"] = df["BreathNumber"].map(mapping)
     if "__pos__" in df.columns:
         df.drop(columns="__pos__", inplace=True, errors="ignore")
 
-    # ---- Step 4: Alert（Two_Breath / Fragment）----
+    # ---- Step 4: Alert (Two_Breath / Fragment) ----
     breath_lengths = df.groupby("BreathNumber").size().astype(int)
     if len(breath_lengths) > 0:
         window = max(1, min(N_for_moving_avg, len(breath_lengths)))
@@ -915,24 +915,24 @@ def CreateBreathNumber(df,
 # Cleaning OCRed text. Especially deleting noise like 2nd "."
 def clean_decimal_number(text):
     """
-    テキスト中の数字および小数点を抽出・整形し、floatまたはintとして返す。
+    Extract and clean up digits and decimal points in the text and return a float or int.
 
-    主な処理内容：
-    - 数字および小数点以外の文字をすべて削除
-    - 2つ以上ある小数点は最初の1つのみを残し、それ以降は削除
-    - 最後が小数点で終わっている場合は削除
-    - 整形後の文字列に応じて float または int 型に変換
-    - 数字が存在しない・不正な場合は None を返す
+    Main processing:
+    - Remove all characters other than digits and decimal points
+    - If there are two or more decimal points, keep only the first and remove the rest
+    - Remove a trailing decimal point
+    - Convert to float or int depending on the cleaned string
+    - Return None if there are no digits or the value is invalid
 
     Parameters
     ----------
     text : str
-        OCRなどで取得された文字列（例："6.2mg", "12..3", "abc7.89g"）
+        String obtained by OCR etc. (e.g. "6.2mg", "12..3", "abc7.89g")
 
     Returns
     -------
     float or int or None
-        正常に抽出・変換された数値（float または int）。変換できなければ None。
+        The successfully extracted and converted number (float or int). None if conversion fails.
 
     Tests
     -------
@@ -976,37 +976,37 @@ def VTi_Imputation(df):
 
 
 
-# ===== IE_Ratio 用ヘルパ（parse_IE_ratio の直上に追加） =====
+# ===== Helpers for IE_Ratio (added right above parse_IE_ratio) =====
 import re, unicodedata
 
 def _fix_round_X(x: float) -> float:
-    """X を小数1桁に丸め。X>=10 は小数点誤読とみなし 1回だけ ÷10、X<1 は 1.0 へ。"""
+    """Round X to 1 decimal place. X>=10 is treated as a decimal-point misread and divided by 10 once; X<1 becomes 1.0."""
     x = float(x)
-    if x >= 10.0: x = x / 10.0      # 例: 21 → 2.1
+    if x >= 10.0: x = x / 10.0      # e.g. 21 -> 2.1
     if x < 1.0:  x = 1.0
     return round(x + 1e-8, 1)
 
 def _preclean_space_comma_to_colon(s: str) -> str:
-    """空白/カンマ→コロン、全角→半角、連続コロン圧縮、端のコロン除去。"""
+    """Whitespace/comma -> colon, full-width -> half-width, collapse consecutive colons, strip edge colons."""
     if s is None:
         return ""
     s = unicodedata.normalize("NFKC", str(s))
     s = (s.replace("・", ".").replace("_", ".").replace("：", ":")
            .replace(",", ":").replace("，", ":").replace("、", ":"))
-    s = s.replace("|", " ")                      # 生文字連結の '|' を空白扱い（念のため）
-    # 二重ドットはここで壊さない（先に余分な空白だけ除去）
+    s = s.replace("|", " ")                      # treat '|' from raw-text joining as whitespace (just in case)
+    # Do not break double dots here (first just remove extra whitespace)
     if re.search(r"\d+\.\d+\.\d+", s):
         s = re.sub(r"\s+", "", s)
         return s.upper()
-    s = re.sub(r"\s+", ":", s)                   # 空白の連続 → コロン
-    s = re.sub(r":{2,}", ":", s)                 # 連続コロン圧縮
+    s = re.sub(r"\s+", ":", s)                   # runs of whitespace -> colon
+    s = re.sub(r":{2,}", ":", s)                 # collapse consecutive colons
     s = s.replace(":.:", ":")                    # '1 . 2.2' → '1:2.2'
-    s = s.strip(":")                             # 先頭/末尾コロン除去
-    s = re.sub(r"\s+", "", s)                    # 念のため
+    s = s.strip(":")                             # strip leading/trailing colons
+    s = re.sub(r"\s+", "", s)                    # just in case
     return s.upper()
 
 def _normalize_two_dot(s_pre: str) -> str:
-    """a.b.c → 1:X / X:1 に正規化（X≥1, 小数1桁）。非該当は ''。"""
+    """Normalize a.b.c -> 1:X / X:1 (X>=1, 1 decimal place). Returns '' if not applicable."""
     if not s_pre or ":" in s_pre:
         return ""
     m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", s_pre)
@@ -1022,14 +1022,14 @@ def _normalize_two_dot(s_pre: str) -> str:
         return f"{_fix_round_X(A/B):.1f}:1"
 
 def _normalize_colon_leading_dot(s_pre: str) -> str:
-    """1:.xx / 1:.x.x… / .xx:1 / .x.x…:1 を 1:X / X:1 に復元。非該当は ''。"""
+    """Restore 1:.xx / 1:.x.x... / .xx:1 / .x.x...:1 to 1:X / X:1. Returns '' if not applicable."""
     if not s_pre or ":" not in s_pre:
         return ""
     # 1:.xx / 1:.x.x...
     m = re.fullmatch(r"\s*1\s*:\s*\.(\d+(?:\.\d+)*)\s*", s_pre)
     if m:
         d = m.group(1)
-        digits = re.sub(r"\D", "", d)           # 例: "2.1" → "21"
+        digits = re.sub(r"\D", "", d)           # e.g. "2.1" -> "21"
         if digits == "": 
             return ""
         X = float(f"{digits[0]}.{digits[1:]}") if len(digits) >= 2 else float(f"{digits}.0")
@@ -1049,10 +1049,10 @@ def _normalize_colon_leading_dot(s_pre: str) -> str:
 
 
 def _passthrough_if_canonical(s_pre: str) -> str:
-    """既に 1:X / X:1 の形なら X を補正＆丸めして返す（X≥1, 1桁）。非該当は ''。"""
+    """If already in 1:X / X:1 form, correct and round X and return it (X>=1, 1 digit). Returns '' if not applicable."""
     if not s_pre or ":" not in s_pre:
         return ""
-    # 余分なトークンが付いた場合の保険：最初の2トークンだけを見る
+    # Safeguard when extra tokens are attached: look at only the first 2 tokens
     parts = s_pre.split(":")
     if len(parts) >= 3:
         s_pre = f"{parts[0]}:{parts[1]}"
@@ -1067,7 +1067,7 @@ def _passthrough_if_canonical(s_pre: str) -> str:
     return ""
 
 def _normalize_one_dot_1xx(s_pre: str) -> str:
-    """1.xx → 1:X（X≥1, 1桁）。非該当は ''。"""
+    """1.xx -> 1:X (X>=1, 1 digit). Returns '' if not applicable."""
     if not s_pre or ":" in s_pre:
         return ""
     m = re.fullmatch(r"1\.(\d+)$", s_pre)
@@ -1078,21 +1078,21 @@ def _normalize_one_dot_1xx(s_pre: str) -> str:
     return f"1:{_fix_round_X(X):.1f}"
 
 
-# ===== ここから置換：parse_IE_ratio =====
+# ===== Replaced from here: parse_IE_ratio =====
 def parse_IE_ratio(ie_raw):
     """
-    IE_Ratio_raw → IE_Ratio（数値 I/(I+E)）に変換。
-    仕様:
-      - 純粋な小数（<1）は、その値をそのまま割合として採用（'.xx' も 0.xx と解釈）
-      - それ以外は X:Y 形や >1 の小数（コロン誤認識）だけを対象に正規化
-        前処理（空白/カンマ→コロン等）→ 二重ドット → 1:.xx/.xx:1 復元 → 既に 1:X/X:1 → 1.xx
-        の優先順で 1:X / X:1（X≥1, 小数1桁、X≥10 は 1回だけ ÷10）へ整形し、 a/(a+b) を返す。
+    Convert IE_Ratio_raw -> IE_Ratio (numeric I/(I+E)).
+    Spec:
+      - A pure decimal (<1) is adopted as the ratio as-is ('.xx' is also interpreted as 0.xx)
+      - Otherwise, only X:Y forms or decimals >1 (colon misrecognition) are normalized:
+        preprocessing (whitespace/comma -> colon, etc.) -> double dot -> restore 1:.xx/.xx:1 -> already 1:X/X:1 -> 1.xx
+        in that priority order, shaped into 1:X / X:1 (X>=1, 1 decimal place, X>=10 divided by 10 once), and a/(a+b) is returned.
     """
     s_pre = _preclean_space_comma_to_colon(ie_raw)
     if not s_pre:
         return 0.0
 
-    # 1) 純粋な小数（<1）はそのまま割合として採用（'.xx' も 0.xx）
+    # 1) A pure decimal (<1) is adopted as the ratio as-is ('.xx' is also 0.xx)
     t = re.sub(r"[^0-9.]", "", s_pre)
     if t:
         if t.startswith("."):
@@ -1104,7 +1104,7 @@ def parse_IE_ratio(ie_raw):
             except ValueError:
                 return 0.0
 
-    # 2) X:Y or >1 の小数 → 最小正規化で 1:X / X:1 に
+    # 2) X:Y or decimal >1 -> minimal normalization to 1:X / X:1
     norm = _normalize_two_dot(s_pre)
     if not norm:
         norm = _normalize_colon_leading_dot(s_pre)
@@ -1126,11 +1126,11 @@ def parse_IE_ratio(ie_raw):
 
 def _preprocess_for_edi(roi: np.ndarray) -> np.ndarray:
     """
-    Edi領域だけ前処理：
-      1) コントラスト強調（弱め）
-      2) 平滑化（エッジを保ちつつノイズ低減）
-      3) Otsu二値化（露出差への追従）
-    入力: uint8 1ch（グレースケール）を想定
+    Preprocessing only for the Edi region:
+      1) Contrast enhancement (mild)
+      2) Smoothing (reduce noise while preserving edges)
+      3) Otsu binarization (to follow exposure differences)
+    Input: assumed uint8 single-channel (grayscale)
     """
     g = roi.copy()
     g = cv2.convertScaleAbs(g, alpha=2.0, beta=0)

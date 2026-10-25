@@ -1,67 +1,67 @@
 section,item,param,current_value,measured_value,format,where_to_measure
-A_波形バンド,Pressure,top_y,88,86,y(px),Pawパネル上端の水平線(=スケール最大 +40 cmH2O の線)の中心y。左軸ラベル「40」の高さ。
-A_波形バンド,Pressure,bottom_y,220,222,y(px),Pawパネル下端の水平線(=最小 -4 cmH2O の線)の中心y。左軸ラベル「-4」の高さ。
-A_波形バンド,Pressure,top_value,40,40,値,top_yが表す物理値(=軸ラベルの最大値)。通常+40。自動レンジで変わる場合は実機で確認。
-A_波形バンド,Pressure,bottom_value,-4,-4,値,bottom_yが表す物理値。固定 -4。
-A_波形バンド,Pressure,zero_y(参考),208,208,y(px),0 cmH2O のグリッド線中心y(検証用・任意)。
-A_波形バンド,Flow,top_y,244,222,y(px),フローパネル上端線(=+max +100 l/min の線)の中心y。左軸ラベル「100」の高さ。
-A_波形バンド,Flow,bottom_y,339,358,y(px),フローパネル下端線(=-max -100 l/min の線)の中心y。左軸ラベル「-100」の高さ。
-A_波形バンド,Flow,top_value,100,100,値,top_yが表す物理値(+max)。通常+100。
-A_波形バンド,Flow,bottom_value,-100,-100,値,bottom_yが表す物理値(-max)。Flowは対称軸なので -top_value。
-A_波形バンド,Flow,zero_y(参考),291,291,y(px),0 l/min の明るい静的水平線の中心y(検証用)。top_yとbottom_yの中点になるはず。
-A_波形バンド,Volume,top_y,370,359,y(px),Vパネル上端線(=スケール最大 450 ml の線)の中心y。左軸ラベル「450」の高さ。
-A_波形バンド,Volume,bottom_y,497,495,y(px),Vパネル下端線(=0 ml の線)の中心y。左軸ラベル「0」の高さ。
-A_波形バンド,Volume,top_value,450,450,値,top_yが表す物理値(=軸ラベル最大)。自動レンジで変わる。
-A_波形バンド,Volume,bottom_value,0,0,値,bottom_yが表す物理値。固定 0 ml。
-A_波形バンド,Edi,top_y,513,496,y(px),Ediパネル上端線(=スケール最大 12 uV の線)の中心y。左軸ラベル「12」の高さ。
-A_波形バンド,Edi,bottom_y,633,631,y(px),Ediパネル下端線(=0 uV の線)の中心y。左軸ラベル「0」の高さ。
-A_波形バンド,Edi,top_value,12,12,値,top_yが表す物理値。EdiはOCR困難なためEdiPeakで別途校正するが、参考に測る。
-A_波形バンド,Edi,bottom_value,0,0,値,bottom_yが表す物理値。固定 0 uV。
-B_掃引域x,Plot,x_left,140,140,x(px),4パネル共通の波形プロット域の左境界x(縦の境界線)。
-B_掃引域x,Plot,x_right,893,893,x(px),波形プロット域の右境界x。右側の数値パネルとの境目。
-B_掃引域x,Plot,x_label_right,175,175,x(px),左軸ラベル/文字が波形に重なる左帯の右端x。
-B_掃引域x,Plot,wrap_left_edge,160,160,x(px),掃引折り返し判定の左端閾値(x_leftよりやや内側)。
-B_掃引域x,Plot,wrap_right_edge,872,872,x(px),掃引折り返し判定の右端閾値(x_rightよりやや内側)。
-B_掃引域x,Edi,sweep_cutoff_x,847,847,x(px),Ediで掃引カーソル以降を無効化するx。カーソル(白縦線)の位置。
-C_スケール数値OCR枠,Pressure,x,132,,x(px),Pawの軸最大数字「40」の外接枠 左上x。
-C_スケール数値OCR枠,Pressure,y,86,,y(px),同 左上y。
-C_スケール数値OCR枠,Pressure,w,54,,幅(px),同 枠の幅。
-C_スケール数値OCR枠,Pressure,h,22,,高さ(px),同 枠の高さ。
-C_スケール数値OCR枠,Flow,x,132,,x(px),フローの軸最大数字「100」の外接枠 左上x。
-C_スケール数値OCR枠,Flow,y,224,,y(px),同 左上y。
-C_スケール数値OCR枠,Flow,w,54,,幅(px),同 幅。
-C_スケール数値OCR枠,Flow,h,22,,高さ(px),同 高さ。
-C_スケール数値OCR枠,Volume,x,126,,x(px),Vの軸最大数字「450」の外接枠 左上x。
-C_スケール数値OCR枠,Volume,y,360,,y(px),同 左上y。
-C_スケール数値OCR枠,Volume,w,56,,幅(px),同 幅。
-C_スケール数値OCR枠,Volume,h,22,,高さ(px),同 高さ。
-D_数値表示OCR枠,VTe,x,1139,,x(px),右パネル「VTe」数値(441 ml)の外接枠 左上x。
-D_数値表示OCR枠,VTe,y,450,,y(px),同 左上y。
-D_数値表示OCR枠,VTe,w,55,,幅(px),同 幅。
-D_数値表示OCR枠,VTe,h,30,,高さ(px),同 高さ。
-D_数値表示OCR枠,EdiPeak,x,953,,x(px),「Edipeak」数値(12.0 uV)の外接枠 左上x。
-D_数値表示OCR枠,EdiPeak,y,518,,y(px),同 左上y。
-D_数値表示OCR枠,EdiPeak,w,67,,幅(px),同 幅。
-D_数値表示OCR枠,EdiPeak,h,31,,高さ(px),同 高さ。
-D_数値表示OCR枠,Cdyn,x,1110,,x(px),「Cdyn」数値(27.2 ml/cmH2O)の外接枠 左上x。
-D_数値表示OCR枠,Cdyn,y,531,,y(px),同 左上y。
-D_数値表示OCR枠,Cdyn,w,164,,幅(px),同 幅。
-D_数値表示OCR枠,Cdyn,h,62,,高さ(px),同 高さ。
-D_数値表示OCR枠,Triggered,x,843,,x(px),上部「トリガ/換気状態」マーク領域の外接枠 左上x。
-D_数値表示OCR枠,Triggered,y,50,,y(px),同 左上y。
-D_数値表示OCR枠,Triggered,w,49,,幅(px),同 幅。
-D_数値表示OCR枠,Triggered,h,34,,高さ(px),同 高さ。
-D_数値表示OCR枠,IE_Ratio,x,1086,,x(px),「I:E」数値(1:2.1)の外接枠 左上x。
-D_数値表示OCR枠,IE_Ratio,y,243,,y(px),同 左上y。
-D_数値表示OCR枠,IE_Ratio,w,168,,幅(px),同 幅。
-D_数値表示OCR枠,IE_Ratio,h,44,,高さ(px),同 高さ。
-E_異常検知帯,ROI1_左帯,x1,144,,x(px),左参照帯(画面左の縦帯)の左上x。
-E_異常検知帯,ROI1_左帯,y1,91,,y(px),同 左上y。
-E_異常検知帯,ROI1_左帯,x2,172,,x(px),同 右下x。
-E_異常検知帯,ROI1_左帯,y2,631,,y(px),同 右下y。
-E_異常検知帯,ROI2_右帯,x1,1226,,x(px),右参照帯(画面右の縦帯)の左上x。
-E_異常検知帯,ROI2_右帯,y1,92,,y(px),同 左上y。
-E_異常検知帯,ROI2_右帯,x2,1251,,x(px),同 右下x。
-E_異常検知帯,ROI2_右帯,y2,630,,y(px),同 右下y。
-F_基準解像度,BASE_RESOLUTION,width,1280,,px,計測の基準解像度 幅(維持なら変更不要)。
-F_基準解像度,BASE_RESOLUTION,height,720,,px,同 高さ。
+A_WaveformBands,Pressure,top_y,88,86,y(px),Center y of the horizontal line at the top of the Paw panel (= the scale-max +40 cmH2O line). Height of the left-axis label "40".
+A_WaveformBands,Pressure,bottom_y,220,222,y(px),Center y of the horizontal line at the bottom of the Paw panel (= the min -4 cmH2O line). Height of the left-axis label "-4".
+A_WaveformBands,Pressure,top_value,40,40,value,Physical value represented by top_y (= max axis label value). Usually +40. Check on the actual device if auto-ranging changes it.
+A_WaveformBands,Pressure,bottom_value,-4,-4,value,Physical value represented by bottom_y. Fixed -4.
+A_WaveformBands,Pressure,zero_y(reference),208,208,y(px),Center y of the 0 cmH2O grid line (for verification; optional).
+A_WaveformBands,Flow,top_y,244,222,y(px),Center y of the top line of the Flow panel (= the +max +100 l/min line). Height of the left-axis label "100".
+A_WaveformBands,Flow,bottom_y,339,358,y(px),Center y of the bottom line of the Flow panel (= the -max -100 l/min line). Height of the left-axis label "-100".
+A_WaveformBands,Flow,top_value,100,100,value,Physical value represented by top_y (+max). Usually +100.
+A_WaveformBands,Flow,bottom_value,-100,-100,value,Physical value represented by bottom_y (-max). Flow has a symmetric axis so it is -top_value.
+A_WaveformBands,Flow,zero_y(reference),291,291,y(px),Center y of the bright static 0 l/min horizontal line (for verification). Should be the midpoint of top_y and bottom_y.
+A_WaveformBands,Volume,top_y,370,359,y(px),Center y of the top line of the V panel (= the scale-max 450 ml line). Height of the left-axis label "450".
+A_WaveformBands,Volume,bottom_y,497,495,y(px),Center y of the bottom line of the V panel (= the 0 ml line). Height of the left-axis label "0".
+A_WaveformBands,Volume,top_value,450,450,value,Physical value represented by top_y (= max axis label). Changes with auto-ranging.
+A_WaveformBands,Volume,bottom_value,0,0,value,Physical value represented by bottom_y. Fixed 0 ml.
+A_WaveformBands,Edi,top_y,513,496,y(px),Center y of the top line of the Edi panel (= the scale-max 12 uV line). Height of the left-axis label "12".
+A_WaveformBands,Edi,bottom_y,633,631,y(px),Center y of the bottom line of the Edi panel (= the 0 uV line). Height of the left-axis label "0".
+A_WaveformBands,Edi,top_value,12,12,value,Physical value represented by top_y. Edi is hard to OCR so it is calibrated separately via EdiPeak; measure it for reference.
+A_WaveformBands,Edi,bottom_value,0,0,value,Physical value represented by bottom_y. Fixed 0 uV.
+B_SweepAreaX,Plot,x_left,140,140,x(px),Left boundary x of the waveform plot area shared by the 4 panels (vertical boundary line).
+B_SweepAreaX,Plot,x_right,893,893,x(px),Right boundary x of the waveform plot area. Border with the numeric panel on the right.
+B_SweepAreaX,Plot,x_label_right,175,175,x(px),Right edge x of the left band where left-axis labels/text overlap the waveforms.
+B_SweepAreaX,Plot,wrap_left_edge,160,160,x(px),Left-edge threshold for sweep wrap-around detection (slightly inside x_left).
+B_SweepAreaX,Plot,wrap_right_edge,872,872,x(px),Right-edge threshold for sweep wrap-around detection (slightly inside x_right).
+B_SweepAreaX,Edi,sweep_cutoff_x,847,847,x(px),x beyond which Edi is invalidated after the sweep cursor. Position of the cursor (white vertical line).
+C_ScaleNumberOCRBox,Pressure,x,132,,x(px),Top-left x of the bounding box of the Paw axis max number "40".
+C_ScaleNumberOCRBox,Pressure,y,86,,y(px),Same; top-left y.
+C_ScaleNumberOCRBox,Pressure,w,54,,width(px),Same; box width.
+C_ScaleNumberOCRBox,Pressure,h,22,,height(px),Same; box height.
+C_ScaleNumberOCRBox,Flow,x,132,,x(px),Top-left x of the bounding box of the Flow axis max number "100".
+C_ScaleNumberOCRBox,Flow,y,224,,y(px),Same; top-left y.
+C_ScaleNumberOCRBox,Flow,w,54,,width(px),Same; width.
+C_ScaleNumberOCRBox,Flow,h,22,,height(px),Same; height.
+C_ScaleNumberOCRBox,Volume,x,126,,x(px),Top-left x of the bounding box of the V axis max number "450".
+C_ScaleNumberOCRBox,Volume,y,360,,y(px),Same; top-left y.
+C_ScaleNumberOCRBox,Volume,w,56,,width(px),Same; width.
+C_ScaleNumberOCRBox,Volume,h,22,,height(px),Same; height.
+D_NumericDisplayOCRBox,VTe,x,1139,,x(px),Top-left x of the bounding box of the right-panel "VTe" number (441 ml).
+D_NumericDisplayOCRBox,VTe,y,450,,y(px),Same; top-left y.
+D_NumericDisplayOCRBox,VTe,w,55,,width(px),Same; width.
+D_NumericDisplayOCRBox,VTe,h,30,,height(px),Same; height.
+D_NumericDisplayOCRBox,EdiPeak,x,953,,x(px),Top-left x of the bounding box of the "Edipeak" number (12.0 uV).
+D_NumericDisplayOCRBox,EdiPeak,y,518,,y(px),Same; top-left y.
+D_NumericDisplayOCRBox,EdiPeak,w,67,,width(px),Same; width.
+D_NumericDisplayOCRBox,EdiPeak,h,31,,height(px),Same; height.
+D_NumericDisplayOCRBox,Cdyn,x,1110,,x(px),Top-left x of the bounding box of the "Cdyn" number (27.2 ml/cmH2O).
+D_NumericDisplayOCRBox,Cdyn,y,531,,y(px),Same; top-left y.
+D_NumericDisplayOCRBox,Cdyn,w,164,,width(px),Same; width.
+D_NumericDisplayOCRBox,Cdyn,h,62,,height(px),Same; height.
+D_NumericDisplayOCRBox,Triggered,x,843,,x(px),Top-left x of the bounding box of the top "trigger/ventilation status" mark area.
+D_NumericDisplayOCRBox,Triggered,y,50,,y(px),Same; top-left y.
+D_NumericDisplayOCRBox,Triggered,w,49,,width(px),Same; width.
+D_NumericDisplayOCRBox,Triggered,h,34,,height(px),Same; height.
+D_NumericDisplayOCRBox,IE_Ratio,x,1086,,x(px),Top-left x of the bounding box of the "I:E" number (1:2.1).
+D_NumericDisplayOCRBox,IE_Ratio,y,243,,y(px),Same; top-left y.
+D_NumericDisplayOCRBox,IE_Ratio,w,168,,width(px),Same; width.
+D_NumericDisplayOCRBox,IE_Ratio,h,44,,height(px),Same; height.
+E_AbnormalDetectionBand,ROI1_LeftBand,x1,144,,x(px),Top-left x of the left reference band (vertical band on the left of the screen).
+E_AbnormalDetectionBand,ROI1_LeftBand,y1,91,,y(px),Same; top-left y.
+E_AbnormalDetectionBand,ROI1_LeftBand,x2,172,,x(px),Same; bottom-right x.
+E_AbnormalDetectionBand,ROI1_LeftBand,y2,631,,y(px),Same; bottom-right y.
+E_AbnormalDetectionBand,ROI2_RightBand,x1,1226,,x(px),Top-left x of the right reference band (vertical band on the right of the screen).
+E_AbnormalDetectionBand,ROI2_RightBand,y1,92,,y(px),Same; top-left y.
+E_AbnormalDetectionBand,ROI2_RightBand,x2,1251,,x(px),Same; bottom-right x.
+E_AbnormalDetectionBand,ROI2_RightBand,y2,630,,y(px),Same; bottom-right y.
+F_BaseResolution,BASE_RESOLUTION,width,1280,,px,Width of the base resolution for measurement (no change needed if kept).
+F_BaseResolution,BASE_RESOLUTION,height,720,,px,Same; height.

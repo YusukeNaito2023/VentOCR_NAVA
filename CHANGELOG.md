@@ -1,15 +1,16 @@
 # CHANGELOG
 
 ## 0.1.2 (2026-10-25)
-解析の結果は 0.1.1 と同じ。manifest.json に出力の宣言 `outputs` を足した（VentOCR 0.6.2 から。ENGINE_API.md §8.1。形は Hamilton エンジンに合わせた）。`ventocr_min` を 0.6.2 に。
-- waves: Pressure（表示名 Paw、cmH2O）・Flow（L/min）・Volume（mL）・Edi（µV）。縦軸は画面の目盛り（P/F/V/E_min・max）。色はアプリの全機種共通
-- breath_values（並び = 呼吸プロパティの順）:
-  - Real_VTe（表示名 VTe）・Real_VTi（VTi）・Real_Ppeak（Ppeak）: その呼吸の値（次の呼吸の先頭の表示）
-  - EdiPeak: その呼吸の値（呼吸の途中で表示が更新される）
-  - IE_Ratio（I:E 比。I÷E の値）
-  - VTe (displayed)・Cdyn (displayed): その呼吸の間に表示されていた値 = 1 つ前の呼吸の値（Cdyn・VTe の表示は呼吸の区切りと同時に更新される）
-  - 表示の更新の確かめ（サンプル 45 呼吸）: Cdyn・VTe は 46 回とも呼吸の先頭で変わり、VTi・Ppeak・EdiPeak は呼吸の途中（3〜4 割の所）で変わる
-- alerts: Two_Breath（長さが前後の 1.5 倍以上）・Fragment（前後の半分以下）。どちらも精度の評価で除外する
+Analysis results are the same as 0.1.1. Added the output declaration `outputs` to manifest.json (VentOCR 0.6.2 and later; ENGINE_API.md §8.1; same structure as the Hamilton engine). `ventocr_min` is now 0.6.2.
+- waves: Pressure (label Paw, cmH2O), Flow (L/min), Volume (mL), Edi (µV). The y-axis uses the on-screen scale (P/F/V/E_min/max). Colors follow the app's common palette
+- breath_values (order = order in the breath properties):
+  - Real_VTe (label VTe), Real_VTi (VTi), Real_Ppeak (Ppeak): values of this breath (the display at the start of the next breath)
+  - EdiPeak: value of this breath (the display updates in the middle of the breath)
+  - IE_Ratio (I:E ratio, the value of I/E)
+  - VTe (displayed), Cdyn (displayed): values shown during this breath = values of the previous breath (the Cdyn and VTe displays update at the breath boundary)
+  - Display update timing check (sample, 45 breaths): Cdyn and VTe changed at the start of the breath all 46 times; VTi, Ppeak and EdiPeak change mid-breath (30-40% into the breath)
+- alerts: Two_Breath (at least 1.5x the neighbouring breaths) and Fragment (at most half of them). Both are excluded from the accuracy evaluation
+- The engine no longer uses Japanese: manifest labels, progress/error/log messages, README, code comments and docstrings, .gitignore and calibration_template.csv are in English. Full-width characters used to normalize OCR text are kept. Entries for earlier versions below remain in Japanese
 
 ## 0.1.1 (2026-10-21)
 ### 不具合の修正: 呼吸が少ないと解析が止まる

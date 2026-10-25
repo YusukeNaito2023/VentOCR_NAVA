@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-単体OCR（1枚の .npy 画像）を core.py のロジックで読み取り・表示するツール。
-- ROI 座標は Settings.py の ROIs を使用
-- IE_Ratio は initial_ocr と同様に「生文字列と信頼度を保存」しつつ、
-  参考として core.py の parse_IE_ratio で数値化した値も表示
-- それ以外のキー（VTe/EdiPeak/Cdyn/Triggered）は core.py の read_text を厳密実装
+Tool that reads and displays single-image OCR (one .npy image) using the core.py logic.
+- ROI coordinates use ROIs from Settings.py
+- IE_Ratio, like initial_ocr, "stores the raw strings and confidences", while
+  also showing, for reference, the value converted to a number by parse_IE_ratio in core.py
+- The other keys (VTe/EdiPeak/Cdyn/Triggered) strictly implement read_text from core.py
 
-使い方:
-    python ocr_single.py /path/to/frame_00000003.npy --gpu  # GPU有効
+Usage:
+    python ocr_single.py /path/to/frame_00000003.npy --gpu  # GPU enabled
     python ocr_single.py /path/to/frame_00000003.npy        # CPU
 """
 
@@ -20,8 +20,8 @@ import numpy as np
 import re
 import cv2
 
-# ===== Settings（ROI座標） =====
-# ユーザー提供の Settings.py に準拠
+# ===== Settings (ROI coordinates) =====
+# Follows the user-provided Settings.py
 ROIs = {
     "VTe":       [1139, 450, 55, 30],
     "EdiPeak":   [953,  518, 67, 31],
@@ -29,12 +29,12 @@ ROIs = {
     "Triggered": [843,  50,  49, 34],
     "IE_Ratio":  [1086, 243, 168, 44],
 }
-# ↑ 出典: Settings.py の ROIs を忠実に反映（変更しない）  :contentReference[oaicite:2]{index=2}
+# ^ Source: faithfully mirrors ROIs in Settings.py (do not change)
 
 
-# ===== core.py の関数を厳密移植 =====
-# read_text と parse_IE_ratio（＋その補助）を core.py から忠実に反映
-# 出典: core.py  :contentReference[oaicite:3]{index=3}
+# ===== Strict port of functions from core.py =====
+# Faithfully mirrors read_text and parse_IE_ratio (+ their helpers) from core.py
+# Source: core.py
 
 def read_text(reader, roi):
     result = reader.readtext(roi)
@@ -45,25 +45,25 @@ def read_text(reader, roi):
     for res in result:
         _, text, score = res
 
-        # 誤認識補正（core.py と同一）
+        # Misrecognition correction (same as core.py)
         text = text.replace("_", ".").replace("・", ".").replace("I", "1").replace("：",":")
 
         raw_texts.append(text)
         confidences.append(score)
 
-    # 表示用テキスト
+    # Text for display
     full_text = ", ".join(raw_texts)
     confidence_str = ", ".join([f"{s:.2f}" for s in confidences])
 
-    # 数値・小数点以外の除去 → ['33.', '4'] → ['33.', '4']
+    # Remove everything except digits and decimal points -> ['33.', '4'] -> ['33.', '4']
     numeric_parts = [re.sub(r"[^0-9.:]", "", t) for t in raw_texts]
-    numeric_parts = [t for t in numeric_parts if re.match(r"^\d+\.?\d*$", t)]  # 0-9または小数含むもののみ残す
+    numeric_parts = [t for t in numeric_parts if re.match(r"^\d+\.?\d*$", t)]  # keep only 0-9 or those containing a decimal
 
-    # 小数点がすでに含まれていればそれを優先、それ以外は分割扱いで結合
+    # If a decimal point is already present, prefer it; otherwise treat as split parts and join
     if len(numeric_parts) == 1:
         cleaned_value = numeric_parts[0]
     elif len(numeric_parts) >= 2:
-        # numeric_parts[0] が末尾にピリオドを含んでいれば、単純に結合
+        # If numeric_parts[0] ends with a period, simply join
         if numeric_parts[0].endswith('.'):
             cleaned_value = numeric_parts[0] + numeric_parts[1]
         else:
@@ -74,7 +74,7 @@ def read_text(reader, roi):
     return cleaned_value, full_text, confidence_str
 
 
-# ===== parse_IE_ratio とそのヘルパ（core.py を厳密反映） =====
+# ===== parse_IE_ratio and its helpers (strictly mirrors core.py) =====
 import unicodedata
 
 def _fix_round_X(x: float) -> float:
@@ -201,28 +201,28 @@ def parse_IE_ratio(ie_raw):
 
 
 def _ensure_uint8_gray(img: np.ndarray) -> np.ndarray:
-    """.npyで読み込んだ配列を EasyOCR 入力向けに uint8 グレースケールへ整形"""
+    """Shape an array loaded from .npy into uint8 grayscale for EasyOCR input"""
     if img is None:
-        raise ValueError("画像が None です")
+        raise ValueError("Image is None")
     arr = np.array(img)
 
     # 3ch/4ch → Gray
     if arr.ndim == 3 and arr.shape[2] in (3, 4):
-        # 簡易の加重平均（OpenCV不要）
+        # Simple weighted average (no OpenCV needed)
         rgb = arr[..., :3].astype(np.float32)
         gray = (0.299 * rgb[..., 2] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 0])
         arr = gray
     elif arr.ndim == 2:
         pass
     else:
-        # それ以外の形状は無理やり1chに
+        # Force any other shape into 1 channel
         arr = arr.squeeze()
         if arr.ndim != 2:
-            raise ValueError(f"未知の配列形状です: {arr.shape}")
+            raise ValueError(f"Unknown array shape: {arr.shape}")
 
-    # スケール調整
+    # Scale adjustment
     if arr.dtype != np.uint8:
-        # 値域を推定して 0-255 に正規化（必要時）
+        # Estimate the value range and normalize to 0-255 (when needed)
         vmin, vmax = float(np.min(arr)), float(np.max(arr))
         if vmax > vmin:
             arr = (255.0 * (arr - vmin) / (vmax - vmin)).astype(np.uint8)
@@ -233,16 +233,16 @@ def _ensure_uint8_gray(img: np.ndarray) -> np.ndarray:
 
 
 def _preprocess_for_edi(roi: np.ndarray) -> np.ndarray:
-    # 入力は uint8 1ch
+    # Input is uint8 single-channel
     g = roi.copy()
 
-    # コントラスト強調（少し弱め 2.0 から）
+    # Contrast enhancement (a bit mild, starting from 2.0)
     g = cv2.convertScaleAbs(g, alpha=2.0, beta=0)
 
-    # 平滑化（ガウシアンで文字エッジを保ちやすい）
+    # Smoothing (Gaussian tends to preserve character edges)
     g = cv2.GaussianBlur(g, (3, 3), 0)
 
-    # 自動二値化（Otsu）：露出や撮影差に追従
+    # Automatic binarization (Otsu): follows exposure/capture differences
     _, g = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     return g
@@ -250,11 +250,11 @@ def _preprocess_for_edi(roi: np.ndarray) -> np.ndarray:
 
 def main():
     parser = argparse.ArgumentParser(description="Single-frame OCR using core.py logic")
-    parser.add_argument("npy_path", help="入力 .npy 画像（例: frame_00000003.npy）")
-    parser.add_argument("--gpu", action="store_true", help="EasyOCR で GPU を使用する")
+    parser.add_argument("npy_path", help="Input .npy image (e.g. frame_00000003.npy)")
+    parser.add_argument("--gpu", action="store_true", help="Use GPU in EasyOCR")
     args = parser.parse_args()
 
-    # 画像読み込み
+    # Load the image
     if not os.path.exists(args.npy_path):
         print(f"File not found: {args.npy_path}", file=sys.stderr)
         sys.exit(1)
@@ -267,7 +267,7 @@ def main():
     reader = Reader(["en"], gpu=args.gpu)
     print(f"[INFO] GPU: {args.gpu}")
 
-    # すべての ROI を順に OCR
+    # OCR all ROIs in order
     print("=" * 80)
     print(f"Input: {args.npy_path}")
     print("=" * 80)
@@ -275,14 +275,14 @@ def main():
     results = {}
 
     for key, (x, y, w, h) in ROIs.items():
-        # ROI 切り出し（範囲安全化）
+        # Crop the ROI (clamped to the image bounds)
         H, W = img.shape[:2]
         x0 = max(0, min(x, W - 1))
         y0 = max(0, min(y, H - 1))
         x1 = max(0, min(x + w, W))
         y1 = max(0, min(y + h, H))
         if x1 <= x0 or y1 <= y0:
-            print(f"[WARN] ROI {key} が画像範囲外です: ({x},{y},{w},{h})")
+            print(f"[WARN] ROI {key} is outside the image bounds: ({x},{y},{w},{h})")
             roi = img
         else:
             roi = img[y0:y1, x0:x1]
@@ -290,8 +290,8 @@ def main():
         roi_for_ocr = _preprocess_for_edi(roi) if key == "EdiPeak" else roi
 
         if key == "IE_Ratio":
-            # core.py の initial_ocr と同様：生文字・信頼度を保持（値は空文字）
-            result = reader.readtext(roi)  # ← IE_Ratioは従来どおり「生」ROI
+            # Same as initial_ocr in core.py: keep raw text and confidence (value is an empty string)
+            result = reader.readtext(roi)  # <- IE_Ratio uses the "raw" ROI as before
             raw_texts   = [text for (_, text, _) in result] if result else []
             confidences = [score for (_, _, score) in result] if result else []
             raw_join = ", ".join(raw_texts)
@@ -304,14 +304,14 @@ def main():
                 "ie_ratio_numeric": ie_value,
             }
         else:
-            # EdiPeak は前処理済み、その他はそのまま
+            # EdiPeak is preprocessed; the others are used as-is
             value, raw, conf = read_text(reader, roi_for_ocr)
             results[key] = {"value": value, "raw": raw, "conf": conf}
 
 
-    # 表示
+    # Display
     print("\n--- OCR RESULTS (per ROI) ---")
-    order = ["VTe", "EdiPeak", "Cdyn", "Triggered", "IE_Ratio"]  # Settings と同順
+    order = ["VTe", "EdiPeak", "Cdyn", "Triggered", "IE_Ratio"]  # same order as Settings
     for k in order:
         r = results.get(k, {})
         if k != "IE_Ratio":
@@ -321,10 +321,10 @@ def main():
             print(f"  confidences   : {r.get('conf','')}")
         else:
             print(f"[{k}]")
-            print(f"  value         : {r.get('value','')}" )  # 空（initial_ocr仕様）
+            print(f"  value         : {r.get('value','')}" )  # empty (initial_ocr behavior)
             print(f"  raw_texts     : {r.get('raw','')}")
             print(f"  confidences   : {r.get('conf','')}")
-            print(f"  parsed (I/(I+E)): {r.get('ie_ratio_numeric',0.0):.3f}  # parse_IE_ratioより")
+            print(f"  parsed (I/(I+E)): {r.get('ie_ratio_numeric',0.0):.3f}  # from parse_IE_ratio")
 
     print("\nDone.")
 

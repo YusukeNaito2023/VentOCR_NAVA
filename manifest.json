@@ -29,9 +29,9 @@
     "breath_values": [
       { "name": "Real_VTe",   "label": "VTe",                    "unit": "mL",       "format": "{:.0f}" },
       { "name": "Real_VTi",   "label": "VTi",                    "unit": "mL",       "format": "{:.0f}" },
-      { "name": "Real_Ppeak", "label": "Ppeak（ピーク圧）",       "unit": "cmH2O",    "format": "{:.0f}" },
+      { "name": "Real_Ppeak", "label": "Ppeak",                  "unit": "cmH2O",    "format": "{:.0f}" },
       { "name": "EdiPeak",    "label": "Edi peak",               "unit": "µV",       "format": "{:.1f}" },
-      { "name": "IE_Ratio",   "label": "I:E 比",                                     "format": "{:.2f}" },
+      { "name": "IE_Ratio",   "label": "I:E ratio",                                  "format": "{:.2f}" },
       { "name": "VTe",        "label": "VTe (displayed)",        "unit": "mL",       "format": "{:.0f}" },
       { "name": "Cdyn",       "label": "Cdyn (displayed)",       "unit": "mL/cmH2O", "format": "{:.1f}" }
     ],

@@ -7,7 +7,7 @@ from tqdm import tqdm
 import Global_Setting as GS
 from . import Settings
 
-# 進捗(overall)報告はベストエフォート。import 失敗時も本処理は継続する。
+# Progress (overall) reporting is best-effort. Main processing continues even if the import fails.
 try:
     import progress_io
 except Exception:
@@ -15,8 +15,8 @@ except Exception:
 
 
 def _report_progress(user_id, analyze_id, *, message, current, total):
-    """post_ocr 内サブ処理の進捗を overall に流す（失敗しても無視）。
-    完了点(current>=total)はスロットルに潰されないよう必ず書き込む。"""
+    """Forward progress of post_ocr sub-steps to overall (failures are ignored).
+    The completion point (current>=total) is always written so throttling cannot swallow it."""
     if progress_io is None or analyze_id is None:
         return
     try:
@@ -30,10 +30,10 @@ def _report_progress(user_id, analyze_id, *, message, current, total):
 
 
 def _load_frame(path):
-    """フレーム画像を読み込み、基準解像度(Settings.BASE_RESOLUTION)へ正規化する。
-    解像度非依存化のため、ROI/Y_RANGES定義の基準解像度に全フレームを揃える。
-    v1.4: アプリがフレームの画像をその場で作る（manifest の frame_images: on_demand）ので、必ず cv2.imread にパスを渡して読む。
-    BreathsToCSVs の間は同じ画像（終了画像は3回読む）を読み直さないよう、直近の数枚を覚えておく。"""
+    """Load a frame image and normalize it to the base resolution (Settings.BASE_RESOLUTION).
+    For resolution independence, all frames are brought to the base resolution in which ROI/Y_RANGES are defined.
+    v1.4: the app generates frame images on the fly (manifest frame_images: on_demand), so always read by passing a path to cv2.imread.
+    During BreathsToCSVs, the last few images are cached so the same image is not re-read (the end image is read 3 times)."""
     if _frame_cache is not None and path in _frame_cache:
         _frame_cache.move_to_end(path)
         return _frame_cache[path].copy()
@@ -50,16 +50,16 @@ def _load_frame(path):
     return img
 
 
-START_BACK_SEC = 0.6   # 開始画像は呼吸の区切りのこの秒数前（v1.3 までは 6 フレーム決め打ち）
-FRAME_CACHE_SIZE = 8   # 1呼吸で読む画像は開始・終了とそれぞれの直前の4枚
-_frame_cache = None    # BreathsToCSVs の間だけ OrderedDict（path -> 基準解像度の画像）
+START_BACK_SEC = 0.6   # start image is this many seconds before the breath boundary (fixed at 6 frames up to v1.3)
+FRAME_CACHE_SIZE = 8   # per breath we read 4 images: start, end, and the one just before each
+_frame_cache = None    # OrderedDict only during BreathsToCSVs (path -> base-resolution image)
 
-# --- 欠損値補完とスムージングを行うかどうか ---
+# --- Whether to perform missing-value interpolation and smoothing ---
 
-TRIM_TO_BREATH = True  # v1.3: 波形を呼吸の範囲（吸気の始まり〜次の吸気の始まり）に切り詰める
-SMOOTHING = False   # v1.3: 平滑化が実際に効くようになったので既定を OFF に（engine_options.json も OFF）
+TRIM_TO_BREATH = True  # v1.3: trim waveforms to the breath span (inspiration start to next inspiration start)
+SMOOTHING = False   # v1.3: smoothing now actually takes effect, so default is OFF (also OFF in engine_options.json)
 IMPUTATION = True
-# v1.4: abnormal_workers（DetectAbnormalFrames の並列読み込み）は廃止。古い設定に残っていても無視する
+# v1.4: abnormal_workers (parallel loading in DetectAbnormalFrames) removed. Ignored if still present in old settings
 
 def set_config(settings):
     global SMOOTHING, IMPUTATION, TRIM_TO_BREATH
@@ -67,7 +67,7 @@ def set_config(settings):
     IMPUTATION = settings.get("post_ocr", {}).get("imputation", True)
     TRIM_TO_BREATH = settings.get("post_ocr", {}).get("trim_to_breath", True)
 
-# --- 色と位置の定義 ---
+# --- Color and position definitions ---
 COLOR_DEFINITIONS = {
     "Pressure": np.array([110, 163, 193]),
     "Flow": np.array([90, 123, 86]),
@@ -75,15 +75,15 @@ COLOR_DEFINITIONS = {
     "Edi": np.array([171, 105, 166])
 }
 
-# 波形パネルの校正バンド（縦軸）。Photoshopによる再計測値（BASE_RESOLUTION=1280x720 上で計測）。
-#   各 (top_y, bot_y) はパネル上端線=スケール最大値, 下端線=スケール最小値に対応し、
-#   そのまま _pixels_to_physical の校正アンカーになる（top=max, bot=min）。
-#     Pressure: top=+40線, bot=-4線（0線 y≈208 と内挿一致を確認）
-#     Flow:     top=+max線, bot=-max線（対称軸, 0線 y≈291 が中点と一致）
-#     Volume:   top=スケール最大線, bot=0mL線
-#     Edi:      top=スケール最大線, bot=0µV基準線
-#   ※ 旧値は解像度変更等で個別修正されドリフトしていたため、全波形を実測で再校正した。
-#   ※ get_difference_regions もこの定義を単一の真実源として参照する（重複定義を排除）。
+# Calibration bands (vertical) of the waveform panels. Re-measured in Photoshop (on BASE_RESOLUTION=1280x720).
+#     Each (top_y, bot_y) corresponds to panel top line = scale max, bottom line = scale min,
+#     and is used directly as the calibration anchor of _pixels_to_physical (top=max, bot=min).
+#         Pressure: top=+40 line, bot=-4 line (verified consistent with interpolated 0 line y≈208)
+#         Flow:     top=+max line, bot=-max line (symmetric axis; 0 line y≈291 matches the midpoint)
+#         Volume:   top=scale max line, bot=0 mL line
+#         Edi:      top=scale max line, bot=0 µV reference line
+#     * Old values had drifted from piecemeal fixes (e.g. resolution changes), so all waveforms were recalibrated by measurement.
+#     * get_difference_regions also references this definition as the single source of truth (no duplicate definitions).
 Y_RANGES = {
     "Pressure": (86, 222),
     "Flow":     (222, 358),
@@ -93,108 +93,108 @@ Y_RANGES = {
 
 COLOR_TOLERANCE = 40
 
-# --- HSV(色相)ベースのマッチ用パラメータ ---
-# v1.2 変更点:
-#   v1.1 は BGR のユークリッド距離（許容 COLOR_TOLERANCE）で波形色を判定していたが、
-#   高解像度動画(1920x1080)を 1280x720 へ縮小する際、急峻な立ち上がり(ほぼ垂直な細線)が
-#   アンチエイリアスで暗く混色し、BGR距離が許容を超えて NaN 欠損していた（立ち上がり検出不良）。
-#   色相(Hue)は明度・彩度の低下に強く、機種差・縮小ボケがあっても安定するため、
-#   Hue を主判定に切り替える。彩度/明度は背景・文字の除外にのみ用いる。
+# --- Parameters for HSV (hue) based matching ---
+# v1.2 changes:
+#     v1.1 classified waveform color by BGR Euclidean distance (tolerance COLOR_TOLERANCE), but
+#     when downscaling high-res video (1920x1080) to 1280x720, steep rises (near-vertical thin lines)
+#     were darkened/blended by anti-aliasing, BGR distance exceeded tolerance and became NaN (rise detection failures).
+#     Hue is robust to drops in brightness/saturation and stays stable across devices and downscale blur,
+#     so Hue becomes the primary criterion. Saturation/value are used only to exclude background and text.
 
-# 各波形の目標 Hue（OpenCV基準 0-180）。COLOR_DEFINITIONS から自動導出し v1.1 と色定義を共有する。
+# Target Hue per waveform (OpenCV scale 0-180). Derived automatically from COLOR_DEFINITIONS, sharing color definitions with v1.1.
 def _bgr_to_hue(bgr):
     px = np.uint8([[list(np.asarray(bgr, dtype=np.uint8))]])
     return int(cv2.cvtColor(px, cv2.COLOR_BGR2HSV)[0, 0, 0])
 
 TARGET_HUES = {name: _bgr_to_hue(bgr) for name, bgr in COLOR_DEFINITIONS.items()}
 
-HUE_TOLERANCE = 12      # 色相の許容差（循環距離, 0-180）
-SAT_MIN = 40            # これ未満の彩度は背景/灰色文字とみなし除外
-VAL_MIN = 60            # これ未満の明度は背景とみなし除外
-VAL_MIN_LEFT = 45       # 左端(140-175)はラベル領域で波形が暗いため明度条件を緩める
-# 白色（スイープカーソルの先端）フォールバック用
+HUE_TOLERANCE = 12      # hue tolerance (circular distance, 0-180)
+SAT_MIN = 40            # saturation below this is treated as background/gray text and excluded
+VAL_MIN = 60            # value below this is treated as background and excluded
+VAL_MIN_LEFT = 45       # left edge (140-175) is the label area where waveforms are dark, so relax the value condition
+# Fallback for white (tip of the sweep cursor)
 WHITE_SAT_MAX = 45
 WHITE_VAL_MIN = 140
-BORDER_ROWS = 2         # バンド上端から除外する行数（パネル境界線）
+BORDER_ROWS = 2         # rows excluded from the top of the band (panel border line)
 
-# --- 列の範囲から波形の点を決めるためのパラメータ（v1.3） ---
-# v1.3 変更点:
-#   v1.2 は列ごとに「色相が最も近い1画素」を採用していた。急峻な箇所（吸気→呼気の切り替わりなど）では
-#   1列に 30〜60px の縦線があり（縮小・JPEG のにじみで数列に広がる）、その中のどの高さが選ばれるかが
-#   ほぼ偶然で決まるため、隣の列と上下に跳ねて画面に無いスパイクになっていた（例: サンプル B10 の t≈0.73s）。
-#   v1.3 は列ごとに「線が通った範囲」を取り、
-#     1) 縦に続いた画素のかたまりの中から、隣の列とつながる線を呼吸全体で最適に選ぶ（ノイズや文字を除く）
-#     2) 範囲の中でなめらかな経路を呼吸全体で最適に引く（縦線は坂になり、跳ねない）
-#     3) 範囲が経路から局所的に突き出している所（V字の谷・山の先端）はその値に固定して引き直す
-#   ことで、スパイクを出さずに先端（呼気の最大流量、圧の行き過ぎ）を残す。
-RUN_JOIN = 4            # 同じ列で、これ未満の画素の切れ目はつないで1つのかたまりとする
-SEG_GAP = 12            # 列番号の差がこれを超えたら別の線とみなして経路を切る
-RUN_HUE_WEIGHT = 0.5    # かたまりの選択で、色相のずれに掛ける重み（主はつながり）
-PATH_STEP = 0.5         # 経路の高さの刻み（px）
-TIP_MARGIN = 2.0        # 範囲が経路から これ以上 突き出している列を先端の候補とする（px）
-TIP_DROP = 2.0          # 先端の両側で、範囲の端が これ以上 引っ込んでいること（＝坂の途中ではない）
-TIP_WIN = 8             # 先端の両側を調べる列数
-TIP_SUPPORT = 2         # 先端の深さ（±TIP_SUPPORT_PX）に届いている列がこれ以上あること（1列だけの文字・ノイズを除く）
+# --- Parameters for determining waveform points from per-column ranges (v1.3) ---
+# v1.3 changes:
+#     v1.2 took the 'single pixel with the closest hue' per column. At steep parts (e.g. inspiration-to-expiration switch)
+#     a column contains a 30-60px vertical line (spread over several columns by downscale/JPEG blur), and which height was chosen
+#     was nearly random, so values jumped up/down vs. neighbor columns, producing spikes not on screen (e.g. sample B10 at t≈0.73s).
+#     v1.3 takes the 'range the line passed through' per column, and
+#         1) among vertically contiguous pixel runs, optimally selects over the whole breath the line connected to neighbor columns (removes noise/text)
+#         2) optimally draws a smooth path within the ranges over the whole breath (vertical lines become slopes, no jumps)
+#         3) where a range locally protrudes beyond the path (tips of V-shaped troughs/peaks), pins to that value and redraws
+#     thereby keeping tips (peak expiratory flow, pressure overshoot) without producing spikes.
+RUN_JOIN = 4            # in the same column, gaps smaller than this are joined into one run
+SEG_GAP = 12            # if the column-index gap exceeds this, treat as a different line and break the path
+RUN_HUE_WEIGHT = 0.5    # weight on hue deviation when selecting runs (connectivity is primary)
+PATH_STEP = 0.5         # height step of the path (px)
+TIP_MARGIN = 2.0        # columns where the range protrudes beyond the path by at least this are tip candidates (px)
+TIP_DROP = 2.0          # on both sides of a tip, the range edge must recede by at least this (i.e. not mid-slope)
+TIP_WIN = 8             # number of columns examined on each side of a tip
+TIP_SUPPORT = 2         # at least this many columns must reach the tip depth (±TIP_SUPPORT_PX) (excludes single-column text/noise)
 TIP_SUPPORT_PX = 1.5
 
 
 # ============================================================================
-#  軸スケール（縦軸目盛）の推定
-#  パネル左上の軸の数字は 1280x720 換算で高さ 7〜8px しかなく、OCR がほとんど当たらない
-#  （80→30、100/110→読めない）。そこで画面右の大きな表示値と波形の画素から呼吸ごとに逆算する。
-#    Pressure: Real_Ppeak(cmH2O) ↔ 波形のピーク画素。0 cmH2O の基線（薄い横線）からの高さで比例させる
-#    Volume:   Real_VTi(ml) ↔ 波形のピーク画素（0 ml = バンド下端）
-#    Flow:     表示値が無いので、Flow 画素の積分が Volume(ml) の増減に一致するように求める
-#  求めた「バンド上端の値」を目盛りの刻み（SCALE_SNAP）に丸め、前後の呼吸の最頻値で外れ値を除く。
-#  Auto Scaling で目盛りは呼吸ごとに変わる（2026-06-01 の動画では Flow が 60〜110、Volume が 550〜850 を
-#  行き来した）ので、呼吸ごとに求める。計算は画素の四則演算だけなので全呼吸で行っても軽い。
-#  Edi は従来どおり EdiPeak で校正する（_edi_scale_from_peak）。
+#  Axis scale (vertical tick) estimation
+#  The axis numbers at the panel's top-left are only 7-8px tall at 1280x720, so OCR almost never works
+#  (80->30, 100/110->unreadable). Instead, back-calculate per breath from the large on-screen values on the right and the waveform pixels.
+#      Pressure: Real_Ppeak(cmH2O) <-> waveform peak pixel. Proportional by height from the 0 cmH2O baseline (faint horizontal line)
+#      Volume:   Real_VTi(ml) <-> waveform peak pixel (0 ml = band bottom)
+#      Flow:     no displayed value, so solve so that the integral of Flow pixels matches the Volume (ml) change
+#  The resulting 'band top value' is rounded to the tick step (SCALE_SNAP), and outliers removed by the mode of neighboring breaths.
+#  With Auto Scaling the ticks change per breath (in the 2026-06-01 video, Flow moved between 60-110 and Volume 550-850),
+#  so estimate per breath. Computation is just pixel arithmetic, so doing it for all breaths is cheap.
+#  Edi is calibrated by EdiPeak as before (_edi_scale_from_peak).
 # ============================================================================
 SCALE_UNITS = {"Pressure": "cmH2O", "Flow": "L/min", "Volume": "mL", "Edi": "uV"}
-# チャートの手動スケール調整(+/-)のステップ幅（Engine特有）。
+# Step size for manual chart scale adjustment (+/-) (engine-specific).
 SCALE_STEPS = {"Pressure": 5, "Flow": 10, "Volume": 100, "Edi": 5}
 
 
 def scale_meta():
-    """波形チャートの軸スケール用メタ（Engine特有）。post_ocr が Archive に scale_meta.json
-    として保存し、Label(Flask/JS) が読んでステップ幅・単位・対称性を適用する。
-    キーは wave_data に合わせて小文字。"""
+    """Axis-scale metadata for waveform charts (engine-specific). post_ocr saves it to the Archive as scale_meta.json
+    and Label (Flask/JS) reads it to apply step size, units and symmetry.
+    Keys are lowercase to match wave_data."""
     return {
         "steps":     {k.lower(): v for k, v in SCALE_STEPS.items()},
         "units":     {k.lower(): v for k, v in SCALE_UNITS.items()},
-        # 対称軸(min≒-max)か。Flowのみ True（+/- で両端を対称に動かす）。
+        # Whether the axis is symmetric (min≈-max). True only for Flow (+/- moves both ends symmetrically).
         "symmetric": {k.lower(): k == "Flow" for k in SCALE_UNITS},
     }
 
 
-# 0 の基線（薄い灰色の横線）の y（BASE_RESOLUTION）。目盛りが 25/30/40 と変わっても動かない（3本の動画で確認）。
-# 呼吸ごとに終了画像で ±ZERO_SEARCH px の範囲を探し、見つからなければこの値を使う。
+# y of the 0 baseline (faint gray horizontal line) (BASE_RESOLUTION). Does not move when ticks change 25/30/40 (verified on 3 videos).
+# Per breath, search ±ZERO_SEARCH px in the end image; use this value if not found.
 ZERO_Y = {"Pressure": 208, "Flow": 291}
 ZERO_SEARCH = 4
-# バンド上端の値（目盛りの最大値）の刻み。実画面で確認した値: Pressure 25/30/40, Flow 50〜110, Volume 400〜850
+# Tick step of the band top value (scale max). Values seen on real screens: Pressure 25/30/40, Flow 50-110, Volume 400-850
 SCALE_SNAP = {"Pressure": 5, "Flow": 10, "Volume": 50}
-SNAP_TOLERANCE = 0.35       # 推定値と丸めた値の差が 刻み×これ を超える呼吸は推定に使わない（どちらとも言えない）
-SCALE_SMOOTH = 5            # 前後この呼吸数の最頻値で外れ値（二段吸気など）を除く
-SWEEP_RATE_DEFAULT = 81.6   # 掃引の速さ px/秒（3本の動画で 81.5〜81.7）。開始/終了画像の掃引位置から求められないとき用
-# Flow の積分から求めた目盛りは実際より約 5% 小さく出る。
-# v1.3: 3本の動画（261呼吸）で画面の目盛りと照合して 1.06 → 1.05（急な区間を除いた推定で最も一致する値）
+SNAP_TOLERANCE = 0.35       # breaths whose estimate differs from the rounded value by more than step×this are not used (ambiguous)
+SCALE_SMOOTH = 5            # remove outliers (e.g. two-stage inspiration) by the mode over this many neighboring breaths
+SWEEP_RATE_DEFAULT = 81.6   # sweep speed px/s (81.5-81.7 on 3 videos). Used when it cannot be derived from the sweep positions in start/end images
+# The scale derived from the Flow integral comes out about 5% smaller than actual.
+# v1.3: checked against on-screen ticks on 3 videos (261 breaths): 1.06 -> 1.05 (best match when estimating without steep segments)
 FLOW_GAIN = 1.05
-FLOW_WINDOW = 6             # Volume の増減と Flow の積分を比べる区間の長さ（px）
-# v1.3: Flow が隣の列と これを超えて変わる区間（V字の先端・揺れ）は当てはめに使わない（px）。
-# 先端を残すようになって Volume の増減と合わなくなり、推定がばらついたため
+FLOW_WINDOW = 6             # length of the segment (px) over which Volume change and Flow integral are compared
+# v1.3: segments where Flow changes by more than this vs. the neighbor column (V tips, wobble) are not used for fitting (px).
+# Since tips are now preserved, they no longer matched the Volume change and the estimate became noisy
 FLOW_STEEP_PX = 3
 
 
 def _zero_px(img, name):
-    """0 の基線の位置（バンド下端からの画素数＝波形CSVのピクセル値の座標）。"""
+    """Position of the 0 baseline (pixels from band bottom = coordinate of waveform CSV pixel values)."""
     y1, y2 = Y_RANGES[name]
     y0 = ZERO_Y[name]
     if img is not None:
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        best, best_val = None, 40.0       # 背景の明るさ（約30）より明るい灰色の行だけを基線とみなす
+        best, best_val = None, 40.0       # only gray rows brighter than the background (~30) count as the baseline
         for y in range(y0 - ZERO_SEARCH, y0 + ZERO_SEARCH + 1):
-            row = gray[y, 180:880][hsv[y, 180:880, 1] < 40]   # 波形（彩度が高い）を除いた灰色の画素
+            row = gray[y, 180:880][hsv[y, 180:880, 1] < 40]   # gray pixels excluding the waveform (high saturation)
             if len(row) > 300 and np.median(row) > best_val:
                 best, best_val = y, float(np.median(row))
         if best is not None:
@@ -203,14 +203,14 @@ def _zero_px(img, name):
 
 
 def _peak_px(values):
-    """波形のピーク画素（1% の外れを除いた最大値）。点が少なければ None。"""
+    """Waveform peak pixel (max excluding the top 1% outliers). None if too few points."""
     v = np.asarray(values, dtype=float)
     v = v[np.isfinite(v)]
     return float(np.percentile(v, 99)) if len(v) >= 20 else None
 
 
 def _top_from_value(value, peak_px, zero_px, name, min_height=10):
-    """表示値 value が波形のピーク画素 peak_px に当たるとして、バンド上端の値を返す。"""
+    """Return the band top value, assuming the displayed value `value` corresponds to waveform peak pixel peak_px."""
     try:
         value = float(value)
     except (TypeError, ValueError):
@@ -222,10 +222,10 @@ def _top_from_value(value, peak_px, zero_px, name, min_height=10):
 
 
 def _flow_top_from_volume(flow_px, volume_px, volume_scale, zero_px, rate):
-    """Flow の積分 = Volume の増減 となるように、Flow のバンド上端の値（L/min）を求める。
-    FLOW_WINDOW px ごとに「Volume の増減(ml)」と「Flow 画素の和 / 掃引の速さ」を集め、原点を通る直線で当てはめる。
-    0 付近と上端に張り付いた Volume（呼気の終わり、目盛りからはみ出した吸気）と、
-    Flow が急に変わる区間（FLOW_STEEP_PX）は使わない。"""
+    """Find Flow's band top value (L/min) such that integral of Flow = change in Volume.
+    Collect 'Volume change (ml)' and 'sum of Flow pixels / sweep speed' per FLOW_WINDOW px and fit a line through the origin.
+    Volume stuck near 0 or at the top (end of expiration, inspiration exceeding the scale) is not used, nor are
+    segments where Flow changes abruptly (FLOW_STEEP_PX)."""
     f = np.asarray(flow_px, dtype=float) - zero_px
     v = np.asarray(volume_px, dtype=float)
     vt, vb = Y_RANGES["Volume"]
@@ -241,7 +241,7 @@ def _flow_top_from_volume(flow_px, volume_px, volume_scale, zero_px, rate):
         around = f[max(0, i - 1):i + FLOW_WINDOW + 1]
         if np.nanmax(np.abs(np.diff(around))) > FLOW_STEEP_PX:
             continue
-        xs.append(seg.sum() / rate * 1000.0 / 60.0)   # (L/min/px を掛けると) ml
+        xs.append(seg.sum() / rate * 1000.0 / 60.0)   # ml (after multiplying by L/min/px)
         ys.append((b - a) * ml_per_px)
     if len(xs) < 30:
         return None
@@ -255,7 +255,7 @@ def _flow_top_from_volume(flow_px, volume_px, volume_scale, zero_px, rate):
 
 
 def _snap(estimate, step):
-    """推定値を刻みに丸める。刻みのちょうど中間あたり（どちらとも言えない）なら None。"""
+    """Round the estimate to the step. Returns None if it lies around the midpoint between steps (ambiguous)."""
     if estimate is None or not np.isfinite(estimate) or estimate <= 0:
         return None
     snapped = max(step, round(estimate / step) * step)
@@ -263,7 +263,7 @@ def _snap(estimate, step):
 
 
 def _smooth_tops(values, width=SCALE_SMOOTH):
-    """呼吸順の目盛り（None 可）を、前後 width 呼吸の最頻値に置き換える。同数なら自分の値、無ければ近い呼吸の値。"""
+    """Replace per-breath scales (None allowed) with the mode over ±width breaths. On a tie use own value; if none, the nearest breath's value."""
     from collections import Counter
     half = width // 2
     out = []
@@ -276,7 +276,7 @@ def _smooth_tops(values, width=SCALE_SMOOTH):
         n = max(counts.values())
         tied = [v for v, c in counts.items() if c == n]
         out.append(own if own in tied else sorted(tied)[len(tied) // 2])
-    # 前後に推定できた呼吸が無い呼吸は、直前（無ければ直後）の値で埋める
+    # Breaths with no estimated neighbors are filled with the previous value (or the next, if none)
     last = None
     for i, v in enumerate(out):
         if v is None:
@@ -293,15 +293,15 @@ def _smooth_tops(values, width=SCALE_SMOOTH):
 
 
 def _scale_from_top(name, top_value, zero_px):
-    """バンド上端の値と 0 の基線の位置から {min, max, unit}（バンド下端・上端の値）を作る。"""
+    """Build {min, max, unit} (values at band bottom/top) from the band top value and 0 baseline position."""
     top, bot = Y_RANGES[name]
     h = bot - top
     return {"min": round(-zero_px * top_value / (h - zero_px), 2), "max": top_value, "unit": SCALE_UNITS[name]}
 
 
 def _estimate_scales(records, rate):
-    """BreathsToCSVs が集めた呼吸ごとの画素波形から {BreathNumber: {name: scale}} を求める。
-    records: 呼吸順の dict（breath, waves, zero, ppeak, vti）"""
+    """Compute {BreathNumber: {name: scale}} from per-breath pixel waveforms collected by BreathsToCSVs.
+    records: dicts in breath order (breath, waves, zero, ppeak, vti)"""
     p_tops = [_snap(_top_from_value(r["ppeak"], _peak_px(r["waves"].get("Pressure", [])), r["zero"]["Pressure"], "Pressure"),
                     SCALE_SNAP["Pressure"]) for r in records]
     v_tops = [_snap(_top_from_value(r["vti"], _peak_px(r["waves"].get("Volume", [])), 0.0, "Volume"),
@@ -329,7 +329,7 @@ def _estimate_scales(records, rate):
 
 
 def _pixels_to_physical(values, name, scale):
-    """バンド下端=min, 上端=max の直線写像でピクセル値を物理単位へ変換する。"""
+    """Convert pixel values to physical units by linear mapping band bottom=min, top=max."""
     top, bot = Y_RANGES[name]
     H = bot - top
     mn, mx = scale["min"], scale["max"]
@@ -338,16 +338,16 @@ def _pixels_to_physical(values, name, scale):
         if v is None or (isinstance(v, float) and np.isnan(v)):
             out.append(np.nan)
         else:
-            # 2桁に丸める（CSV/JSONの肥大化＝Label描画遅延を防ぐ。画素分解能より十分細かい）
+            # round to 2 decimals (avoids bloating CSV/JSON = slow Label rendering; still much finer than pixel resolution)
             out.append(round(mn + (float(v) / H) * (mx - mn), 2))
     return out
 
 
 def _edi_scale_from_peak(edi_peak, edi_pixels, min_peak_px=8):
-    """Edi の軸MAXはOCR困難なため、CSV済みの EdiPeak 値(µV)と波形ピーク画素で校正する。
-    Edi波形ピクセルはバンド下端=0(=0µV)からの高さ。ピーク画素 peak_px が EdiPeak に対応する。
-    → max(バンド上端の値) = EdiPeak * H / peak_px、min=0。
-    返り値: {"min":0, "max":float, "unit":"uV"} / 校正不能なら None。"""
+    """Edi's axis MAX is hard to OCR, so calibrate using the EdiPeak value (µV) already in the CSV and the waveform peak pixel.
+    Edi pixels are heights from band bottom=0 (=0 µV). Peak pixel peak_px corresponds to EdiPeak.
+    -> max (band top value) = EdiPeak * H / peak_px, min=0.
+    Returns: {"min":0, "max":float, "unit":"uV"} / None if calibration is impossible."""
     try:
         ep = float(edi_peak)
     except (TypeError, ValueError):
@@ -358,7 +358,7 @@ def _edi_scale_from_peak(edi_peak, edi_pixels, min_peak_px=8):
     if not valid:
         return None
     peak_px = max(valid)
-    if peak_px < min_peak_px:        # 振幅が小さすぎると校正が不安定
+    if peak_px < min_peak_px:        # calibration is unstable if amplitude is too small
         return None
     top, bot = Y_RANGES["Edi"]
     H = bot - top
@@ -371,15 +371,15 @@ def _scale_frame_path(frames_root, source_file, iframe):
 
 
 def _hue_circular_dist(hue_array, target_hue):
-    """色相の循環距離（0-90）を返す。"""
+    """Return the circular hue distance (0-90)."""
     d = np.abs(hue_array.astype(np.int16) - int(target_hue))
     return np.minimum(d, 180 - d)
 
 
-# --- 色相(HSV)に基づく波形抽出 ---
+# --- Hue (HSV) based waveform extraction ---
 def _column_runs(img, waveform_name):
-    """列ごとに、波形色の画素の縦のかたまり [(lo, hi, hue_dist)] を返す（lo/hi はバンド下端からの高さ）。
-    画素の判定（色相・彩度・明度・左端の文字除外・白いペン先）は v1.2 と同じ。"""
+    """Per column, return vertical runs of waveform-colored pixels [(lo, hi, hue_dist)] (lo/hi are heights from band bottom).
+    Pixel classification (hue, saturation, value, left-edge text exclusion, white pen tip) is the same as v1.2."""
     h, w, _ = img.shape
     target_hue = TARGET_HUES.get(waveform_name)
     hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -390,12 +390,12 @@ def _column_runs(img, waveform_name):
         H, S, V = hsv_col[:, 0], hsv_col[:, 1], hsv_col[:, 2]
         global_x = x + globals().get("x_start", 0)
 
-        # 判定: Edi はスイープ位置(847)以降を無効化（v1.1 と同一仕様）
+        # Rule: for Edi, invalidate from sweep position (847) onward (same spec as v1.1)
         if waveform_name == "Edi" and 847 <= global_x:
             cols.append([])
             continue
 
-        # 左端(140-175)はラベル/文字が重なるため、明度条件を緩めつつ灰色文字を明示的に除外する
+        # Left edge (140-175) overlaps labels/text, so relax the value condition while explicitly excluding gray text
         if 140 <= global_x <= 175:
             val_min = VAL_MIN_LEFT
             text_gray_mask = (
@@ -410,11 +410,11 @@ def _column_runs(img, waveform_name):
 
         hue_dist = _hue_circular_dist(H, target_hue)
         valid = (hue_dist <= HUE_TOLERANCE) & (S >= SAT_MIN) & (V >= val_min) & extra_ok
-        # バンド上端の数行はパネルの境界線。波形色と誤判定されて上端(=h)へ跳ねるため除外する
+        # The top rows of the band are the panel border. Excluded because misclassified as waveform color they jump to the top (=h)
         valid[:BORDER_ROWS] = False
 
         if not valid.any():
-            # 補助判定: 白色（スイープカーソル先端）で再挑戦
+            # Fallback: retry with white (sweep cursor tip)
             if waveform_name in ["Pressure", "Flow", "Edi"]:
                 white = (S <= WHITE_SAT_MAX) & (V >= WHITE_VAL_MIN) & extra_ok
                 white[:BORDER_ROWS] = False
@@ -440,9 +440,9 @@ def _column_runs(img, waveform_name):
 
 
 def _choose_runs(cols):
-    """各列のかたまりから、隣の列とつながる1本の線を選ぶ（Viterbi）。
-    コスト = Σ(隣のかたまりとの隙間^2 / 列の間隔) + RUN_HUE_WEIGHT × 色相のずれ。
-    列番号の差が SEG_GAP を超える所で区間を分ける。戻り値: (列ごとの (lo, hi) or None, 区間ごとの列番号リスト)"""
+    """From each column's runs, select a single line connected to neighbor columns (Viterbi).
+    Cost = Σ(gap to neighbor run^2 / column spacing) + RUN_HUE_WEIGHT × hue deviation.
+    Split into segments where the column gap exceeds SEG_GAP. Returns: (per-column (lo, hi) or None, list of column indices per segment)"""
     chosen = [None] * len(cols)
     idx = [i for i, c in enumerate(cols) if c]
     if not idx:
@@ -476,7 +476,7 @@ def _choose_runs(cols):
 
 
 def _smooth_path(lo, hi, gaps):
-    """各列の範囲 [lo_i, hi_i] の中で Σ(隣の列との差^2 / 列の間隔) が最小の経路（PATH_STEP 刻みの Viterbi）。"""
+    """Path minimizing Σ(diff to neighbor column^2 / column spacing) within each column's range [lo_i, hi_i] (Viterbi with PATH_STEP steps)."""
     grids = [np.arange(lo[i], hi[i] + 1e-9, PATH_STEP) if hi[i] > lo[i] else np.array([lo[i]])
              for i in range(len(lo))]
     cost = np.zeros(len(grids[0]))
@@ -497,8 +497,8 @@ def _smooth_path(lo, hi, gaps):
 
 
 def _is_local_tip(env, sign, ext, i, j):
-    """列 [i, j] の先端 ext から左右へ TIP_WIN 列以内に TIP_DROP 以上引っ込む列があり、
-    それより手前に ext を超えて突き出す列が無いこと（＝局所的な山・谷の先端。坂の途中ではない）。"""
+    """Within TIP_WIN columns left and right of tip ext at columns [i, j], there is a column receding by at least TIP_DROP,
+    and no column before it protrudes beyond ext (= tip of a local peak/trough, not mid-slope)."""
     n = len(env)
     for step, start in ((-1, i - 1), (1, j + 1)):
         k = start
@@ -517,7 +517,7 @@ def _is_local_tip(env, sign, ext, i, j):
 
 
 def _find_tips(a, b, y):
-    """範囲（中心線に直した下端 a・上端 b）が経路 y から局所的に突き出している先端 {位置: 値} を返す。"""
+    """Return tips {position: value} where the range (bottom a / top b, adjusted to centerline) locally protrudes beyond path y."""
     n = len(y)
     pins = {}
     for sign, env in ((-1, a), (1, b)):
@@ -541,15 +541,15 @@ def _find_tips(a, b, y):
     return pins
 
 
-# imageを渡すと波形の時系列データを返してくれる内部関数
+# Internal function: given an image, returns waveform time-series data
 def _extract_waveform(img, target_bgr, max_dist=40, waveform_name=None, y_offset=0):
-    """列ごとの「線が通った範囲」から波形の時系列（バンド下端からの高さ, 欠損は NaN）を返す（v1.3）。"""
+    """Return the waveform time series (height from band bottom, missing = NaN) from per-column 'ranges the line passed through' (v1.3)."""
     cols = _column_runs(img, waveform_name)
     out = np.full(len(cols), np.nan)
     chosen, segs = _choose_runs(cols)
     if not segs:
         return list(out)
-    # 線の太さ（緩やかな所のかたまりの高さ）。範囲の上下端を線の中心へ寄せるのに使う
+    # Line thickness (run height on gentle parts). Used to pull range ends toward the line center
     widths = np.array([c[1] - c[0] + 1 for c in chosen if c is not None])
     half = (float(np.clip(np.percentile(widths, 25), 1, 5)) - 1) / 2
     for seg in segs:
@@ -569,7 +569,7 @@ def _extract_waveform(img, target_bgr, max_dist=40, waveform_name=None, y_offset
         out[seg] = y
     return list(out)
 
-# --- 画像から時系列データを抽出 ---
+# --- Extract time-series data from the image ---
 def extract_waveform_timeseries(image_path, x_start=524, x_end=807):
     globals()["x_start"] = x_start
     img = _load_frame(image_path)
@@ -581,13 +581,13 @@ def extract_waveform_timeseries(image_path, x_start=524, x_end=807):
         if IMPUTATION:
             series = pd.Series(ts).interpolate(method='linear', limit_direction='both')
         if SMOOTHING:
-            # v1.2 までは移動平均の結果を直後に上書きしており、平滑化は効いていなかった（v1.3 で修正）。
-            # 既定は OFF。ON にすると V字の先端が削れる
+            # Up to v1.2 the moving-average result was immediately overwritten, so smoothing had no effect (fixed in v1.3).
+            # Default is OFF. Turning it ON erodes V-shaped tips
             series = series.rolling(window=10, center=True, min_periods=1).mean()
         waveforms[name] = series.to_numpy()
     return waveforms
 
-# --- 差分領域の検出 ---
+# --- Difference region detection ---
 import cv2
 import numpy as np
 
@@ -617,37 +617,37 @@ def get_regions_for_y_range(img1, img2, y_start, y_end,
 def get_difference_regions(image_path1, image_path2):
     x_start, x_end = 140, 893
 
-    # Y範囲（Pressure/Flow/Volume の3パネル）。Y_RANGES を単一の真実源として参照する
-    # （以前はここに別値をハードコードしておりドリフトの温床だった）。
+    # Y ranges (3 panels: Pressure/Flow/Volume). References Y_RANGES as the single source of truth
+    # (previously separate values were hardcoded here, a breeding ground for drift).
     y_ranges = [Y_RANGES["Pressure"], Y_RANGES["Flow"], Y_RANGES["Volume"]]
 
-    # 画像読み込み
+    # Load images
     img1 = _load_frame(image_path1)
     img2 = _load_frame(image_path2)
 
-    # 各Y範囲に対する差分領域を抽出
+    # Extract difference regions for each Y range
     region_sets = []
     for y_start, y_end in y_ranges:
         regions = get_regions_for_y_range(img1, img2, y_start, y_end, x_start, x_end)
         region_sets.append(regions)
 
-    # X軸上の重なりを調べるためにビットマスクを用意
-    x_length = x_end + 1  # 893まで対応
+    # Prepare a bitmask to check overlap along the X axis
+    x_length = x_end + 1  # supports up to 893
     mask = np.zeros(x_length, dtype=int)
 
-    # 各regionセットに重なりをカウント
+    # Count overlaps for each region set
     for regions in region_sets:
         temp = np.zeros(x_length, dtype=int)
         for x1, x2 in regions:
             temp[x1:x2 + 1] = 1
         mask += temp
 
-    # 2つ以上のregionで重なっているXを取得
+    # Get X positions overlapped by 2 or more regions
     overlap_coords = np.where(mask >= 2)[0]
     if len(overlap_coords) == 0:
         return []
 
-    # X座標からregionに再変換
+    # Convert X coordinates back to regions
     merged = []
     start = overlap_coords[0]
     for i in range(1, len(overlap_coords)):
@@ -659,7 +659,7 @@ def get_difference_regions(image_path1, image_path2):
     return merged
 
 
-# --- 差分領域の波形連結 ---
+# --- Concatenate waveforms of difference regions ---
 def merge_waveforms_across_regions(image_path, regions):
     merged = {}
     for x_start, x_end in sorted(regions, key=lambda r: -r[0]):
@@ -669,25 +669,25 @@ def merge_waveforms_across_regions(image_path, regions):
     return {k: np.array(v) for k, v in merged.items()}
 
 
-# --- 終端フレームの掃引カーソル(先端)検出 ---
-# v1.2 追加:
-#   start/end 2フレーム差分は、区間が長い呼吸では現在の掃引に加えて「終端カーソルより右に
-#   残っている前掃引の古い波形(残像)」まで拾い、複数波形に見える不具合があった。
-#   終端フレームとその直前フレームの差分帯＝掃引先端(カーソル)位置であり、これより右の列は
-#   前掃引の残像なので、抽出領域から落とすための基準xを返す。
+# --- Detect sweep cursor (tip) in the end frame ---
+# Added in v1.2:
+#     The start/end 2-frame diff, for long-interval breaths, picked up not only the current sweep but also the
+#     'old waveform (afterimage) of the previous sweep remaining to the right of the end cursor', looking like multiple waveforms.
+#     The diff band between the end frame and the frame just before it = sweep tip (cursor) position; columns to its right
+#     are previous-sweep afterimage, so return the reference x used to drop them from the extraction regions.
 def _sweep_cursor_from_imgs(img_e, img_b, x_lo=140, x_hi=893,
                             diff_thresh=25, smooth_kernel=15,
                             vote_panels=("Pressure", "Flow", "Volume"),
                             min_vote=2, cluster_gap=10, wrap_width=250):
-    """2枚の画像(終端/直前, いずれも基準解像度)から掃引カーソルx(=先端＝新規描画の右端)を返す。
-    検出不可なら None。画像は _load_frame 済み(BASE_RESOLUTION)である前提。
+    """Return sweep cursor x (= tip = right edge of new drawing) from 2 images (end / previous, both base resolution).
+    None if not detectable. Images are assumed already loaded via _load_frame (BASE_RESOLUTION).
 
-    カーソルは全波形パネルを縦断する縦の特徴なので、Pressure/Flow/Volume の各パネルで
-    列ごとに平滑後差分が閾値超えかを投票し、min_vote(=2)票以上一致した列だけを採用する
-    （get_difference_regions と同じ多数決。Edi はパネル固有マーカーがあり単一パネルで化けるため除外）。
-    これで Edi マーカーや単一パネルのノイズに釣られず x_hi まで全幅探索できる。
-    採用列をクラスタ化し、幅広クラスタ(掃引折り返し)があれば最右の幅広クラスタの左端、
-    無ければ最右クラスタの右端(=先端)を返す。"""
+    The cursor is a vertical feature spanning all waveform panels, so in each Pressure/Flow/Volume panel
+    vote per column on whether the smoothed diff exceeds the threshold, and adopt only columns with >= min_vote(=2) votes
+    (same majority vote as get_difference_regions; Edi is excluded since its panel-specific marker corrupts single-panel results).
+    This allows full-width search up to x_hi without being fooled by the Edi marker or single-panel noise.
+    Adopted columns are clustered; if wide clusters (sweep wrap) exist, return the left edge of the rightmost wide cluster,
+    otherwise the right edge (= tip) of the rightmost cluster."""
     if img_e is None or img_b is None:
         return None
     width = x_hi - x_lo
@@ -703,7 +703,7 @@ def _sweep_cursor_from_imgs(img_e, img_b, x_lo=140, x_hi=893,
     xs = np.where(vote >= min_vote)[0]
     if len(xs) == 0:
         return None
-    # 採用列をクラスタ化（cluster_gap 以内の列を1クラスタに束ねる）
+    # Cluster adopted columns (columns within cluster_gap are grouped into one cluster)
     runs = []
     start = prev = xs[0]
     for x in xs[1:]:
@@ -712,17 +712,17 @@ def _sweep_cursor_from_imgs(img_e, img_b, x_lo=140, x_hi=893,
             start = x
         prev = x
     runs.append((start, prev))
-    # 掃引折り返し: 幅広クラスタがあれば最右の幅広クラスタの左端＝カーソル
+    # Sweep wrap: if a wide cluster exists, the left edge of the rightmost wide cluster = cursor
     wide = [r for r in runs if (r[1] - r[0]) > wrap_width]
     if wide:
         return x_lo + int(wide[-1][0])
-    # 通常: 最右クラスタの右端＝掃引先端
+    # Normal: right edge of the rightmost cluster = sweep tip
     return x_lo + int(runs[-1][1])
 
 
 def _detect_sweep_cursor(path_end, path_before, x_lo=140, x_hi=893,
                          diff_thresh=25, smooth_kernel=15):
-    """終端フレームの掃引カーソルx(=先端＝最右の新規描画列)を返す。検出不可なら None。"""
+    """Return the end frame's sweep cursor x (= tip = rightmost newly drawn column). None if not detectable."""
     return _sweep_cursor_from_imgs(
         _load_frame(path_end), _load_frame(path_before),
         x_lo=x_lo, x_hi=x_hi, diff_thresh=diff_thresh, smooth_kernel=smooth_kernel,
@@ -730,30 +730,30 @@ def _detect_sweep_cursor(path_end, path_before, x_lo=140, x_hi=893,
 
 
 def annotate_sweep_lines(df_frames, frames_root, line_bgr=(0, 0, 255), thickness=2):
-    """各フレームに掃引カーソル(Sweep Line)を縦線で描き込み、元のフレーム画像を上書き保存する。
-    検出は基準解像度(BASE_RESOLUTION)で行い、描画は元解像度のフレームへ座標をスケールして引く
-    （元解像度を保持＝Labelの元解像度ダウンロードと整合）。直前フレーム(無加工)との差分で先端xを
-    検出し、波形帯(Pressure上端〜Edi下端)を縦断する線を引く。Detect Sweep Line オプション(既定OFF)
-    有効時の診断用。検出不能フレームは無印のまま。描画したフレーム数を返す。"""
+    """Draw the sweep cursor (Sweep Line) as a vertical line on each frame and overwrite the original frame image.
+    Detection runs at base resolution (BASE_RESOLUTION); drawing scales coordinates to the original-resolution frame
+    (keeps original resolution = consistent with Label's original-resolution download). Detects tip x from the diff with
+    the previous (unmodified) frame and draws a line spanning the waveform band (Pressure top to Edi bottom). Diagnostic for when the
+    Detect Sweep Line option (default OFF) is enabled. Undetectable frames are left unmarked. Returns the number of frames drawn."""
     if df_frames is None or getattr(df_frames, "empty", True):
         return 0
     base_w, base_h = Settings.BASE_RESOLUTION
     y0 = int(Y_RANGES["Pressure"][0])
     y1 = int(Y_RANGES["Edi"][1])
     ordered = df_frames.sort_values("Frame")
-    prev_norm = None   # 直前フレームの基準解像度画像（検出専用・無加工）
+    prev_norm = None   # base-resolution image of previous frame (detection only, unmodified)
     drawn = 0
     for _, fr in ordered.iterrows():
         path = _scale_frame_path(frames_root, fr.get("source_file"), fr.get("iFrame"))
-        norm = _load_frame(path)               # 基準解像度（検出用）
+        norm = _load_frame(path)               # base resolution (for detection)
         if norm is None:
             prev_norm = None
             continue
         cursor_x = _sweep_cursor_from_imgs(norm, prev_norm) if prev_norm is not None else None
-        prev_norm = norm                       # 無加工のまま次フレーム検出に使う（線の混入なし）
+        prev_norm = norm                       # kept unmodified for next frame's detection (no line contamination)
         if cursor_x is None:
             continue
-        orig = cv2.imread(path)                # 元解像度のまま（描画して上書き）
+        orig = cv2.imread(path)                # original resolution (draw and overwrite)
         if orig is None:
             continue
         oh, ow = orig.shape[:2]
@@ -765,13 +765,13 @@ def annotate_sweep_lines(df_frames, frames_root, line_bgr=(0, 0, 255), thickness
         cv2.line(orig, (x, ya), (x, yb), line_bgr, max(1, int(round(thickness * sx))))
         cv2.imwrite(path, orig)
         drawn += 1
-    return drawn                  # 先端＝最右の変化列
+    return drawn                  # tip = rightmost changed column
 
 
 def _trim_regions_right_of_cursor(regions, cursor_x, left_edge=160, right_edge=872):
-    """終端カーソルより右の領域(=前掃引の残像)を落とす。
-    ただし真の折り返し(左右両端に別々の領域が存在)の場合は、右側が当該呼吸の正規描画なので
-    トリムせず従来処理に委ねる。"""
+    """Drop regions right of the end cursor (= previous-sweep afterimage).
+    However, for a true wrap (separate regions at both left and right edges), the right side is this breath's genuine drawing,
+    so do not trim and defer to the existing processing."""
     if cursor_x is None or not regions:
         return regions
     right_touch = any(r[1] >= right_edge for r in regions)
@@ -783,20 +783,20 @@ def _trim_regions_right_of_cursor(regions, cursor_x, left_edge=160, right_edge=8
     return [(xs, xe) for xs, xe in trimmed if xe > xs]
 
 
-# --- 掃引折り返し(Sweep wrap)対応の呼吸領域再構成 ---
-# v1.2 追加:
-#   差分は start/end 2フレームの「片方にしか波形が無い」全X位置を拾うため、掃引が1呼吸以上
-#   進む/画面右端で折り返す呼吸では、別呼吸の古い残像断片まで領域に混ざり、連結すると
-#   2つの山(プラトー)に見える不具合があった。
-#   折り返しを検出した場合は「右端領域(折り返し直前に描画)→左端領域(折り返し直後に描画)」のみを
-#   時系列順で採用し、中間の古い残像断片を破棄する（非折り返し時は従来通り全領域を使う）。
+# --- Breath region reconstruction for sweep wrap ---
+# Added in v1.2:
+#     The diff picks up every X position where 'only one of the start/end frames has a waveform', so for breaths where the sweep
+#     advances more than one breath / wraps at the right edge, old afterimage fragments of other breaths got mixed in, and concatenation
+#     looked like two humps (plateaus).
+#     When a wrap is detected, adopt only 'right-edge region (drawn just before wrap) -> left-edge region (drawn just after wrap)'
+#     in time order and discard old afterimage fragments in between (non-wrap cases use all regions as before).
 def _select_breath_regions(regions, left_edge=160, right_edge=872):
     if regions is None or len(regions) <= 1:
         return regions
-    right = [r for r in regions if r[1] >= right_edge]   # 画面右端に接する領域
-    left  = [r for r in regions if r[0] <= left_edge]    # 画面左端に接する領域
+    right = [r for r in regions if r[1] >= right_edge]   # regions touching the right edge of the screen
+    left  = [r for r in regions if r[0] <= left_edge]    # regions touching the left edge of the screen
     if right and left:
-        # 折り返し検出: 右端→左端の呼吸断片のみ採用し、中間の残像を捨てる
+        # Wrap detected: adopt only right-edge -> left-edge breath fragments, discard afterimages in between
         sel = sorted(right, key=lambda r: r[0]) + sorted(left, key=lambda r: r[0])
         seen, out = set(), []
         for r in sel:
@@ -805,17 +805,17 @@ def _select_breath_regions(regions, left_edge=160, right_edge=872):
                 seen.add(key)
                 out.append(r)
         return out
-    # 非折り返し: 従来通り（差分が局所的で残像混入が起きにくい）
+    # Non-wrap: as before (diff is local, afterimage contamination unlikely)
     return regions
 
 
-# --- 末尾に混入する「次呼吸の立ち上がり」をトリム ---
-# v1.2 追加:
-#   折り返し時の左端領域は、次呼吸の吸気立ち上がり開始位置まで差分が伸びることがあり、
-#   再構成波形の末尾に次呼吸の立ち上がりが僅かに残る。Pressure波形で「一度ベースラインに
-#   戻った後に再度立ち上がる(=次呼吸の吸気)」点を検出し、そこ以降を全波形から切り落とす。
-#   1呼吸は通常 baseline→吸気→プラトー→呼気→baseline であり、2回目の立ち上がりは無いため、
-#   2回目の立ち上がりを検出したときのみ保守的にトリムする。
+# --- Trim the 'next breath rise' mixed in at the end ---
+# Added in v1.2:
+#     On wrap, the left-edge region's diff can extend to the start of the next breath's inspiratory rise,
+#     leaving a small part of the next breath's rise at the end of the reconstructed waveform. In the Pressure waveform, detect the point
+#     where it 'returns to baseline once and then rises again (= next breath's inspiration)' and cut all waveforms from there on.
+#     A breath is normally baseline -> inspiration -> plateau -> expiration -> baseline with no second rise,
+#     so trim conservatively only when a second rise is detected.
 def _trim_trailing_breath(waveforms, ref="Pressure"):
     P = waveforms.get(ref)
     if P is None:
@@ -830,38 +830,38 @@ def _trim_trailing_breath(waveforms, ref="Pressure"):
     base = np.nanpercentile(s, 20)
     peak = np.nanpercentile(s, 90)
     amp = peak - base
-    if amp < 15:  # 振幅が小さい（平坦/欠損）→ 判定不能なのでトリムしない
+    if amp < 15:  # small amplitude (flat/missing) -> undeterminable, do not trim
         return waveforms
     hi = base + 0.60 * amp
     lo = base + 0.30 * amp
     above = s > hi
     if not above.any():
         return waveforms
-    first_up = int(np.argmax(above))                       # 1回目の吸気
-    after = np.where(s[first_up:] < lo)[0]                  # その後ベースライン付近へ戻る
+    first_up = int(np.argmax(above))                       # first inspiration
+    after = np.where(s[first_up:] < lo)[0]                  # then returns near baseline
     if len(after) == 0:
         return waveforms
     back = first_up + int(after[0])
-    nxt = np.where(s[back:] > hi)[0]                        # 再度立ち上がる（次呼吸の吸気）
+    nxt = np.where(s[back:] > hi)[0]                        # rises again (next breath's inspiration)
     if len(nxt) == 0:
         return waveforms
     cut = back + int(nxt[0])
-    # 立ち上がり開始（cut直前でベースライン付近を最後に通過した点）まで戻して切る
+    # Move back to the rise onset (last point near baseline just before cut) and cut there
     pre = np.where(s[back:cut] <= lo)[0]
     if len(pre) > 0:
         cut = back + int(pre[-1]) + 1
-    # 早すぎる切断（主呼吸を誤って切る）を防ぐガード
+    # Guard against cutting too early (mistakenly cutting the main breath)
     if cut < n * 0.5:
         return waveforms
     return {k: np.asarray(v)[:cut] for k, v in waveforms.items()}
 
-# --- Volume の非生理的V字谷(高→低→高)を除去 ---
-# v1.2 追加:
-#   急峻な立ち上がり/降下の列で本来の波形画素を取り逃すと、バンド下端(0ml線)付近の
-#   迷光画素を誤採用し、孤立列だけ 0mL 付近に沈む（Breath 5,16 で発生）。
-#   Volumeは1呼吸で単峰（上昇→下降）であり高→低→高のV字谷は非生理的なため、
-#   両肩(前後の局所ピーク)に対して相対的に深く沈む孤立した谷を OCR誤検出として
-#   NaN化し、線形補間で復元する。Flow/Pressure/Edi は双方向に振れるため対象外。
+# --- Remove non-physiological V-shaped troughs (high->low->high) in Volume ---
+# Added in v1.2:
+#     When genuine waveform pixels are missed in columns with steep rise/fall, stray pixels near the band bottom (0 ml line)
+#     are picked up instead, so isolated columns sink to near 0 mL (seen in Breath 5,16).
+#     Volume is unimodal per breath (rise -> fall), so a high->low->high V-trough is non-physiological;
+#     isolated troughs sinking relatively deep vs. both shoulders (neighboring local peaks) are treated as OCR misdetections,
+#     set to NaN and restored by linear interpolation. Flow/Pressure/Edi swing both ways and are excluded.
 def _reject_volume_troughs(waveforms, name="Volume", win=20,
                            trough_ratio=0.5, prom_ratio=0.25):
     v = waveforms.get(name)
@@ -875,7 +875,7 @@ def _reject_volume_troughs(waveforms, name="Volume", win=20,
     if np.isnan(filled).all():
         return waveforms
     peak = np.nanmax(filled)
-    base = np.nanpercentile(filled, 5)   # ベースライン近傍
+    base = np.nanpercentile(filled, 5)   # near baseline
     amp = peak - base
     if amp <= 0:
         return waveforms
@@ -884,21 +884,21 @@ def _reject_volume_troughs(waveforms, name="Volume", win=20,
         if np.isnan(s[i]):
             continue
         l0, r1 = max(0, i - win), min(n, i + win + 1)
-        lmax = np.nanmax(filled[l0:i]) if i > l0 else -np.inf      # 左肩
-        rmax = np.nanmax(filled[i + 1:r1]) if i + 1 < r1 else -np.inf  # 右肩
+        lmax = np.nanmax(filled[l0:i]) if i > l0 else -np.inf      # left shoulder
+        rmax = np.nanmax(filled[i + 1:r1]) if i + 1 < r1 else -np.inf  # right shoulder
         shoulder = min(lmax, rmax)
         if not np.isfinite(shoulder):
             continue
-        # 両肩が十分高い谷(=単調な立ち上がり/降下では発火しない)で、
-        # 谷底が肩に対し相対的に深く沈む孤立点のみを誤検出とみなす
+        # Only troughs where both shoulders are high enough (= does not fire on monotonic rise/fall)
+        # and the trough bottom sinks relatively deep vs. the shoulders, as isolated points, count as misdetections
         if (s[i] < trough_ratio * shoulder
                 and shoulder - s[i] > prom_ratio * amp
                 and shoulder > base + 0.1 * amp):
             bad[i] = True
     if not bad.any():
         return waveforms
-    # 谷として除外した列だけを補間値で置き換える。元々のNaN欠損区間は
-    # 触らず温存し（下流の補間/欠損扱いに委ねる）、副作用を最小化する。
+    # Replace only the columns excluded as troughs with interpolated values. Pre-existing NaN gaps are
+    # left untouched (deferred to downstream interpolation/missing handling) to minimize side effects.
     tmp = s.copy()
     tmp[bad] = np.nan
     interp = pd.Series(tmp).interpolate(method="linear", limit_direction="both").to_numpy()
@@ -907,29 +907,29 @@ def _reject_volume_troughs(waveforms, name="Volume", win=20,
     return {**waveforms, name: s_out}
 
 
-# --- 呼吸の範囲への切り詰め ---
-# v1.3 追加:
-#   呼吸の区切り（Cdyn の表示の更新）は吸気の始まりと微妙にずれるため、開始画像は区切りの 0.6 秒前
-#   （Frame-6）から取り、終了画像は次の呼吸の区切りまで取っている。そのため波形 CSV の先頭に前の呼吸の
-#   呼気の終わり（約 0.4〜0.6 秒）、末尾に次の呼吸の吸気の立ち上がりが入っていた。
-#   Flow の吸気の立ち上がりを見つけ、先頭は最初の吸気の始まりまで、末尾は「呼気を伴わない最後の吸気」
-#   （＝次の呼吸の途中で切れた吸気）の始まりまで削る。さらに、次の呼吸で見つけた吸気の始まりの時刻で
-#   前の呼吸の末尾を切る（短すぎて自分では吸気と判定できない立ち上がりも除くため）。
-#   削った分は Breaths.csv の Wave_T0（最初の点の時刻・秒）/ Wave_Rate（px/秒）で時刻を保つ。
-#   計算は呼吸ごとに Flow の1次元の走査だけ。
-ONSET_PX = 3        # Flow が基線からこれを超えたら吸気の流れ（px）
-ONSET_RUN = 5       # 吸気の流れがこれ以上の列続くこと
-ONSET_PEAK = 8      # その吸気が基線からこれ以上に届くこと（px）
-QUIET_RUN = 5       # 吸気の前に、吸気でない列がこれ以上あること（先頭に入った前の呼吸の吸気の残りを除く）
-ONSET_FRAC = 0.2    # 吸気の最大値のこの割合を超えた点から、立ち上がりの足元までさかのぼる
-EXP_PX = 3          # 呼気の流れ（基線よりこれ以上下, px）
-TRIM_LEAD = 3       # 吸気の始まりの何列前から残すか
+# --- Trim to the breath span ---
+# Added in v1.3:
+#     The breath boundary (Cdyn display update) is slightly offset from inspiration start, so the start image is taken 0.6 s
+#     before the boundary (Frame-6) and the end image up to the next breath's boundary. As a result, the waveform CSV started with the
+#     previous breath's end of expiration (about 0.4-0.6 s) and ended with the next breath's inspiratory rise.
+#     Find Flow inspiratory rises; trim the head to the first inspiration start and the tail to the start of the 'last inspiration
+#     without expiration' (= the next breath's inspiration cut off midway). Additionally, cut the previous breath's tail at the
+#     inspiration start time found in the next breath (to also remove rises too short to be classified as inspiration on their own).
+#     Timing of the trimmed part is preserved via Breaths.csv Wave_T0 (time of first point, s) / Wave_Rate (px/s).
+#     Computation is just a 1-D scan of Flow per breath.
+ONSET_PX = 3        # Flow above baseline by more than this is inspiratory flow (px)
+ONSET_RUN = 5       # inspiratory flow must continue for at least this many columns
+ONSET_PEAK = 8      # that inspiration must reach at least this far above baseline (px)
+QUIET_RUN = 5       # before inspiration there must be at least this many non-inspiratory columns (excludes previous breath's inspiration remnant at the head)
+ONSET_FRAC = 0.2    # from the point exceeding this fraction of the inspiratory max, trace back to the foot of the rise
+EXP_PX = 3          # expiratory flow (at least this far below baseline, px)
+TRIM_LEAD = 3       # how many columns before inspiration start to keep
 
 
 def _inspiration_onsets(flow):
-    """flow: Flow（基線=0、上が吸気、px、NaN 可）。吸気の始まり（立ち上がりの足元）の列番号の一覧。"""
+    """flow: Flow (baseline=0, up = inspiration, px, NaN allowed). List of column indices of inspiration starts (foot of the rise)."""
     raw = np.asarray(flow, dtype=float)
-    g = pd.Series(raw).interpolate(limit_area="inside").to_numpy()   # 欠けた列は判定のときだけつなぐ
+    g = pd.Series(raw).interpolate(limit_area="inside").to_numpy()   # missing columns are bridged only for detection
     n = len(g)
     fin = np.isfinite(g)
     ins = fin & (np.nan_to_num(g) > ONSET_PX)
@@ -951,8 +951,8 @@ def _inspiration_onsets(flow):
             c = i + int(np.argmax(g[i:j + 1] >= ONSET_FRAC * peak))
             while c > 0 and fin[c - 1] and g[c - 1] < g[c] - 0.25:
                 c -= 1
-            # 立ち上がりが欠けた列（掃引の折り返しの継ぎ目など）をまたぐとき、欠ける直前が呼気なら
-            # つないだ線が作った偽の立ち上がりなので吸気の始まりとみなさない
+            # When crossing a column where the rise is missing (e.g. sweep wrap seam), if just before the gap is expiration,
+            # the bridged line created a fake rise, so do not treat it as an inspiration start
             k = c + int(np.argmax(np.isnan(raw[c:]))) if np.isnan(raw[c:i + 1]).any() else None
             before = raw[:k][np.isfinite(raw[:k])] if k is not None else None
             if before is None or len(before) == 0 or before[-1] >= -EXP_PX:
@@ -962,8 +962,8 @@ def _inspiration_onsets(flow):
 
 
 def _breath_trim_range(flow, valid_rows):
-    """残す行の範囲 (head, tail) と最初の吸気の始まり（無ければ None）を返す。
-    valid_rows: いずれかの波形に値がある行（先頭・末尾の空の行も削る）。"""
+    """Return the range of rows to keep (head, tail) and the first inspiration start (None if none).
+    valid_rows: rows where any waveform has a value (empty leading/trailing rows are also trimmed)."""
     n = len(flow)
     if valid_rows.any():
         lo, hi = int(np.argmax(valid_rows)), n - int(np.argmax(valid_rows[::-1]))
@@ -975,15 +975,15 @@ def _breath_trim_range(flow, valid_rows):
     head = max(lo, onsets[0] - TRIM_LEAD)
     tail = hi
     last = onsets[-1]
-    # 最後の吸気の後に呼気が無い＝次の呼吸の吸気が途中で切れて入っている（2呼吸ぶん入った呼吸の2つ目は残す）
+    # No expiration after the last inspiration = next breath's inspiration is cut off and included (in a breath containing 2 breaths, keep the second)
     if last != onsets[0] and not (np.nan_to_num(np.asarray(flow[last:], float)) < -EXP_PX).any():
         tail = max(head + 1, min(hi, last - TRIM_LEAD))
     return head, tail, onsets[0]
 
 
 def _first_sample_time(start_frame, x0, cursor_start, rate, offset):
-    """波形の最初の点の時刻（秒）。アプリの ResultPackage.sample_times と同じ求め方:
-    開始画像のペン先（掃引位置 − 消去帯の幅 offset）から逆算する。折り返しを含む呼吸は開始画像の時刻。"""
+    """Time (s) of the first waveform point. Same method as the app's ResultPackage.sample_times:
+    back-calculated from the start image's pen tip (sweep position - erase band width offset). Breaths containing a wrap use the start image time."""
     ts = float(start_frame) / GS.FPS
     if cursor_start is not None and x0 is not None and 0 < cursor_start \
             and 0 <= cursor_start - x0 <= max(200, 3 * offset):
@@ -992,7 +992,7 @@ def _first_sample_time(start_frame, x0, cursor_start, rate, offset):
 
 
 def _trim_records_to_breaths(records, rate):
-    """records（呼吸の時間順）を切り詰める。rec に head / tail / wave_t0 を書き込む。"""
+    """Trim records (breaths in time order). Writes head / tail / wave_t0 into each rec."""
     offsets = [r["cursor_start"] - r["x0"] for r in records
                if r["cursor_start"] is not None and r["x0"] is not None and 0 <= r["cursor_start"] - r["x0"] <= 200]
     offset = float(np.median(offsets)) if offsets else 0.0
@@ -1006,9 +1006,9 @@ def _trim_records_to_breaths(records, rate):
             r["head"], r["tail"], onset = 0, len(flow), None
         r["onset_time"] = None if onset is None else r["t_first"] + onset / rate
     if TRIM_TO_BREATH:
-        # 次の呼吸の吸気の始まりより後ろは、前の呼吸の末尾から削る
+        # Remove from the previous breath's tail anything after the next breath's inspiration start
         for a, b in zip(records, records[1:]):
-            # 自分の吸気の始まりが無い呼吸（壊れた呼吸）は時刻も怪しいので切らない
+            # Breaths without their own inspiration start (broken breaths) have dubious timing, so do not cut
             if a["onset_time"] is None or b["onset_time"] is None or b["onset_time"] <= a["onset_time"]:
                 continue
             cut = int(np.ceil((b["onset_time"] - a["t_first"]) * rate)) - TRIM_LEAD
@@ -1018,7 +1018,7 @@ def _trim_records_to_breaths(records, rate):
         r["wave_t0"] = r["t_first"] + r["head"] / rate
 
 
-# --- メイン関数: 呼吸波形CSV生成 ---
+# --- Main function: generate per-breath waveform CSVs ---
 def AllWaveformTocsv(waves_csv="./outputs/FinalBreath.csv", frames_root="./frames", output_dir="./Breath"):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -1041,10 +1041,10 @@ def AllWaveformTocsv(waves_csv="./outputs/FinalBreath.csv", frames_root="./frame
         regions = get_difference_regions(img_end, img_start)
         if not regions:
             continue
-        regions = _select_breath_regions(regions)   # 掃引折り返し時の残像断片を除去
+        regions = _select_breath_regions(regions)   # remove afterimage fragments on sweep wrap
         waveforms = merge_waveforms_across_regions(img_end, regions)
-        waveforms = _trim_trailing_breath(waveforms) # 末尾の次呼吸立ち上がりをトリム
-        waveforms = _reject_volume_troughs(waveforms) # Volumeの非生理的V字谷を除去
+        waveforms = _trim_trailing_breath(waveforms) # trim the next breath's rise at the end
+        waveforms = _reject_volume_troughs(waveforms) # remove non-physiological V-troughs in Volume
         x_start = regions[-1][0]
         for name, series in waveforms.items():
             for i, val in enumerate(series):
@@ -1060,7 +1060,7 @@ def AllWaveformTocsv(waves_csv="./outputs/FinalBreath.csv", frames_root="./frame
     print("Waves.csv generated.")
 
 def BreathsToCSVs(*args, **kwargs):
-    """_BreathsToCSVs を、フレームの画像を覚えておく（_frame_cache）状態で呼ぶ。"""
+    """Call _BreathsToCSVs with frame-image caching (_frame_cache) enabled."""
     global _frame_cache
     from collections import OrderedDict
     _frame_cache = OrderedDict()
@@ -1072,12 +1072,12 @@ def BreathsToCSVs(*args, **kwargs):
 
 def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=False, report_path=None, analyze_id=None, reader=None, settings=None):
     """
-    各呼吸エピソードの Start/End 区間から差分領域を抽出し、波形（Pressure, Flow, Volume, Edi）を生成。
-    {BreathNumber}.csv を出力し、加工後の breaths を返す。
+    Extract difference regions from each breath episode's Start/End interval and build waveforms (Pressure, Flow, Volume, Edi).
+    Writes {BreathNumber}.csv and returns the processed breaths.
 
-    追加仕様:
-        overwrite (bool): True なら既存 {BreathNumber}.csv を削除して上書き
-        report_path (str|None): スキップ理由のCSV保存先（Noneなら output_dir/BreathCSV_Report.csv）
+    Additional options:
+        overwrite (bool): if True, delete existing {BreathNumber}.csv and overwrite
+        report_path (str|None): where to save the skip-reason CSV (None -> output_dir/BreathCSV_Report.csv)
     """
     import os
     import numpy as np
@@ -1088,12 +1088,12 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     if report_path is None:
         report_path = os.path.join(GS.Dir_Outputs(user_id), "BreathCSV_Report.csv")
 
-    # ---- 準備：安全なマッピング用インデックスと範囲 ----
-    # framesをIndexにして、それに対応するiframe, src (output_00000.csv)を取得
-    # frameのmin/maxを取得しておき、この範囲でのみframes_idx_iframeなどにアクセス
+    # ---- Setup: indices and ranges for safe mapping ----
+    # Index by frames and get the corresponding iframe and src (output_00000.csv)
+    # Get min/max of frame, and access frames_idx_iframe etc. only within that range
     frames_idx_iframe = frames.set_index("Frame")["iFrame"]
     frames_idx_src    = frames.set_index("Frame")["source_file"]
-    # v1.4: Abnormal は initial_ocr が付ける（列が無ければ異常なしとみなす）
+    # v1.4: Abnormal is set by initial_ocr (if the column is missing, treat as no abnormality)
     frames_idx_abn = (pd.to_numeric(frames["Abnormal"], errors="coerce").fillna(0).astype(int)
                       if "Abnormal" in frames else pd.Series(0, index=frames.index))
     frames_idx_abn.index = frames["Frame"]
@@ -1103,34 +1103,34 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     skip_logs = []
     summary_records = []
 
-    # 軸スケール: 呼吸ごとに {BreathNumber: {name: {min,max,unit}}} を貯める。
-    # 目盛りは前後の呼吸と合わせて決める（_estimate_scales）ので、まず全呼吸の画素波形を集めてから換算・書き出す。
-    # reader は以前の軸の数字のOCR用の引数（互換のため残している。使わない）
+    # Axis scale: accumulate per breath {BreathNumber: {name: {min,max,unit}}}.
+    # Ticks are determined together with neighboring breaths (_estimate_scales), so first collect all breaths' pixel waveforms, then convert and write.
+    # reader is the argument formerly used for OCR of axis numbers (kept for compatibility; unused)
     scale_enabled = (settings or {}).get("post_ocr", {}).get("scale", {}).get("enabled", True)
     breath_scales = {}
-    records = []        # 呼吸順: {breath, waves(画素), zero, ppeak, vti, edi_peak, edi_full, df, out_path, ...}
-    sweep_rates = []    # 開始/終了画像の掃引位置と時刻から求めた掃引の速さ（px/秒）
-    # 診断用: 抽出に使った波形領域の左右端x と 開始/終端フレームの掃引カーソルx を呼吸ごとに貯める
-    # {BreathNumber: (x_start, x_end, cursor_start, cursor_end)}。Sweep検出の妥当性をLabelで確認するため。
+    records = []        # in breath order: {breath, waves (pixels), zero, ppeak, vti, edi_peak, edi_full, df, out_path, ...}
+    sweep_rates = []    # sweep speed (px/s) derived from sweep positions and times in start/end images
+    # Diagnostics: per breath, store left/right x of the waveform region used for extraction and the sweep cursor x of start/end frames
+    # {BreathNumber: (x_start, x_end, cursor_start, cursor_end)}. For verifying Sweep detection in Label.
     breath_xspan = {}
-    # 直前に成功した Edi 目盛り（EdiPeakが*** = NaN で校正不能な呼吸はこれを流用する）
+    # Last successful Edi scale (reused for breaths that cannot be calibrated because EdiPeak is *** = NaN)
     last_edi_scale = None
 
 
-    # Start 側：Frame-6 をクリップしてからマップ（先頭で負になるのを回避）
+    # Start side: clip Frame-6 before mapping (avoid going negative at the beginning)
     
-    # Breathsに入っているFrame列を数値に念のため変換しbase_frameとしてシリーズ化。つまりBase＿Frameはそれぞれの呼吸開始Frame番号
+    # Convert the Breaths Frame column to numeric just in case, as a Series base_frame. I.e. base_frame is each breath's start frame number
     base_frame = pd.to_numeric(breaths["Frame"], errors="coerce")
 
-    # base_frameにNanなどが混入していた場合はframe_minで置き換え、astypeで小数を整数に（17.0->17）、Clipで範囲外（例：baseframeが3で-6したら-3）の場合、frame_minに置き換え
-    start_back = max(1, round(START_BACK_SEC * GS.FPS))   # v1.4: 10 fps で v1.3 と同じ 6 フレーム
+    # If base_frame contains NaN etc., replace with frame_min; astype converts floats to int (17.0->17); clip replaces out-of-range (e.g. base_frame 3 minus 6 = -3) with frame_min
+    start_back = max(1, round(START_BACK_SEC * GS.FPS))   # v1.4: at 10 fps, the same 6 frames as v1.3
     adjusted_frame_start = (base_frame - start_back).fillna(frame_min).astype(int).clip(frame_min, frame_max)
-    breaths["_Start_Frame"] = adjusted_frame_start   # v1.3: 波形の時刻（Wave_T0）を求めるため。最後に消す
+    breaths["_Start_Frame"] = adjusted_frame_start   # v1.3: for computing waveform time (Wave_T0). Removed at the end
 
 
-    # 開始フレームの同定
-    # Start_FileにはadjustedFrameStartで格納された値をキーにしてframes_idx_iframeを探しに行ってる。これでStartのiframeがstart_fileに入る
-    # Start_Folderも同様の論理で最終的に[00000]のようなサブフォルダー名が入る
+    # Identify the start frame
+    # Start_File looks up frames_idx_iframe keyed by the value stored in adjusted_frame_start, so start_file gets the start iframe
+    # Start_Folder uses the same logic and ends up with a subfolder name like [00000]
     breaths["Start_File"] = adjusted_frame_start.map(frames_idx_iframe)
     breaths["Start_Folder"] = (
         adjusted_frame_start.map(frames_idx_src)
@@ -1138,15 +1138,15 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
         .str.replace(".csv",   "", regex=False)
     )
 
-    # 終了フレームの同定
-    # End 側：次呼吸の Frame をそのまま使う（最終行は End が作れないため除去）
+    # Identify the end frame
+    # End side: use the next breath's Frame as is (last row is removed since it has no End)
     breaths["End_Frame"] = breaths["Frame"].shift(-1)
-    breaths = breaths.iloc[:-1]   # 0.1.1: 呼吸が無いときに drop(index[-1]) で落ちないように
+    breaths = breaths.iloc[:-1]   # 0.1.1: so it does not fail on drop(index[-1]) when there are no breaths
 
     adjusted_frame_end = pd.to_numeric(breaths["End_Frame"], errors="coerce").fillna(frame_max).astype(int)
     adjusted_frame_end = adjusted_frame_end.clip(frame_min, frame_max)
 
-    breaths["_End_Frame"] = adjusted_frame_end   # v1.4: 終了画像が Abnormal かを見るため。最後に消す
+    breaths["_End_Frame"] = adjusted_frame_end   # v1.4: to check whether the end image is Abnormal. Removed at the end
     breaths["End_File"] = adjusted_frame_end.map(frames_idx_iframe)
     breaths["End_Folder"] = (
         adjusted_frame_end.map(frames_idx_src)
@@ -1155,7 +1155,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     )
     breaths.drop(columns=["End_Frame"], inplace=True)
 
-    # マップ失敗（NaN）は安全に落とす
+    # Safely drop mapping failures (NaN)
     bad = breaths[breaths[["Start_File", "End_File"]].isna().any(axis=1)]
     if not bad.empty:
         for _, r in bad.iterrows():
@@ -1167,7 +1167,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             })
         breaths = breaths.drop(bad.index)
 
-    # 画像パスの作成（.\users\admin\Frames/00000/frame_00000039.jpgなど）
+    # Build image paths (e.g. .\users\admin\Frames/00000/frame_00000039.jpg)
     breaths["Start_File_Name"] = (
         frames_root + "/" + breaths["Start_Folder"] + "/frame_" +
         breaths["Start_File"].astype(int).astype(str).str.zfill(8) + ".jpg"
@@ -1177,15 +1177,15 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
         breaths["End_File"].astype(int).astype(str).str.zfill(8) + ".jpg"
     )
 
-    # 1呼吸目を除外
+    # Exclude the first breath
     breaths = breaths[breaths["BreathNumber"] != 1].reset_index(drop=True)
 
-    # Map失敗による削除があるので、次のiterrowの前にindexをリセット
+    # Rows may have been dropped due to mapping failures, so reset the index before iterrows
     breaths = breaths.reset_index(drop=True)
 
-    # v1.5: 使う画像（開始・終了とそれぞれの直前）を先に、区間・フレーム番号の小さい順に開いておく。
-    # アプリ（engine_api 3）は開かれた画像を区間動画から作り、前へ進む読み方なら位置を指定し直さずに読み進められる。
-    # 下の処理は呼吸ごとに終了 → 開始の順（後ろへ戻る）に開くので、v1.4 はそのたびに区間動画のシークが起きていた
+    # v1.5: open the images to be used (start, end, and the one before each) up front, in ascending order of segment and frame number.
+    # The app (engine_api 3) builds opened images from segment videos, and forward reads can proceed without re-seeking.
+    # The processing below opens end -> start per breath (going backward), so v1.4 caused a segment-video seek every time
     wanted = set()
     for _, r in breaths.iterrows():
         for folder_col, file_col in (("Start_Folder", "Start_File"), ("End_Folder", "End_File")):
@@ -1197,14 +1197,14 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     for folder, iframe in sorted(wanted):
         os.path.isfile(f"{frames_root}/{folder}/frame_{iframe:08d}.jpg")
 
-    # ---- 各呼吸を処理 ----
+    # ---- Process each breath ----
     _bt_total = len(breaths)
     for _bt_i, (_, row) in enumerate(tqdm(breaths.iterrows(), total=_bt_total), 1):
         if _bt_i % 20 == 0 or _bt_i == _bt_total:
             _report_progress(user_id, analyze_id,
                              message=f"Extracting breath CSVs ({_bt_i}/{_bt_total})",
                              current=_bt_i, total=_bt_total)
-        # 境界値の取得と検証
+        # Get and validate boundary values
         try:
             breath_num   = int(row["BreathNumber"])
             start_iframe = int(row["Start_File"])
@@ -1219,11 +1219,11 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             continue
 
 
-        # FramesからBreathNumberでフィルターして当該データだけを抽出
+        # Filter Frames by BreathNumber to extract only this breath's data
 
         filtered = frames[frames["BreathNumber"] == breath_num].copy()
 
-        # 空っぽならエラー
+        # Error if empty
         if filtered.empty:
             skip_logs.append({
                 "BreathNumber": breath_num, "Status": "SKIPPED",
@@ -1231,9 +1231,9 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             })
             continue
 
-        # v1.4: 波形を読む開始・終了画像が Abnormal（ポップアップなど）なら書き出さない。
-        # 呼吸の途中の Abnormal は問わない（終了画像から波形が読めればよい。Hamilton と同じ考え方）。
-        # v1.3 までは呼吸の中に1枚でも Abnormal があれば書き出さなかった
+        # v1.4: if the start/end images used to read the waveform are Abnormal (e.g. popups), do not write.
+        # Abnormal frames mid-breath don't matter (fine as long as the waveform can be read from the end image; same idea as Hamilton).
+        # Up to v1.3, a breath was not written if even one frame within it was Abnormal
         abn_start = int(frames_idx_abn.get(int(row["_Start_Frame"]), 0))
         abn_end = int(frames_idx_abn.get(int(row["_End_Frame"]), 0))
         if abn_start or abn_end:
@@ -1243,7 +1243,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             })
             continue
 
-        # 画像存在チェック
+        # Check image existence
         img_start = str(row["Start_File_Name"])
         img_end   = str(row["End_File_Name"])
         if not (os.path.isfile(img_start) and os.path.isfile(img_end)):
@@ -1254,7 +1254,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             })
             continue
 
-        # 差分領域抽出
+        # Extract difference regions
         regions = get_difference_regions(img_end, img_start)
         if not regions:
             skip_logs.append({
@@ -1263,9 +1263,9 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             })
             continue
 
-        # 終端カーソル右側の前掃引残像をトリム（直前フレームとの差分で先端を検出）。
-        # 真の折り返し（左右別領域）の場合はトリムせず _select_breath_regions に委ねる。
-        # 直前フレームは img_end と同じフォルダの (iframe-1) として導出する。
+        # Trim previous-sweep afterimage right of the end cursor (tip detected by diff with the previous frame).
+        # For a true wrap (separate left/right regions), do not trim; defer to _select_breath_regions.
+        # The previous frame is derived as (iframe-1) in the same folder as img_end.
         cursor_x = None
         before_path = os.path.join(os.path.dirname(img_end),
                                    f"frame_{end_iframe - 1:08d}.jpg")
@@ -1273,16 +1273,16 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             cursor_x = _detect_sweep_cursor(img_end, before_path)
             regions = _trim_regions_right_of_cursor(regions, cursor_x)
 
-        regions = _select_breath_regions(regions)   # 掃引折り返し時の残像断片を除去
+        regions = _select_breath_regions(regions)   # remove afterimage fragments on sweep wrap
 
-        # 開始フレーム側の掃引カーソルx（開始フレームと直前フレームの差分で検出）
+        # Sweep cursor x on the start-frame side (detected by diff between start frame and previous frame)
         cursor_x_start = None
         before_start = os.path.join(os.path.dirname(img_start),
                                     f"frame_{start_iframe - 1:08d}.jpg")
         if start_iframe - 1 >= 0 and os.path.isfile(before_start):
             cursor_x_start = _detect_sweep_cursor(img_start, before_start)
 
-        # 診断用: 抽出領域の左右端x と 開始/終端フレームの検出カーソルx を記録（Breaths.csvへ出力）
+        # Diagnostics: record left/right x of the extraction region and detected cursor x of start/end frames (output to Breaths.csv)
         if regions:
             breath_xspan[breath_num] = (
                 int(min(r[0] for r in regions)),
@@ -1291,10 +1291,10 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
                 int(cursor_x) if cursor_x is not None else None,
             )
 
-        # 波形抽出
+        # Waveform extraction
         waveforms = merge_waveforms_across_regions(img_end, regions)
-        waveforms = _trim_trailing_breath(waveforms) # 末尾の次呼吸立ち上がりをトリム
-        waveforms = _reject_volume_troughs(waveforms) # Volumeの非生理的V字谷を除去
+        waveforms = _trim_trailing_breath(waveforms) # trim the next breath's rise at the end
+        waveforms = _reject_volume_troughs(waveforms) # remove non-physiological V-troughs in Volume
         length = len(next(iter(waveforms.values()), []))
         if length == 0:
             skip_logs.append({
@@ -1303,12 +1303,12 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             })
             continue
 
-        # 掃引の速さ（Flow の目盛りの推定に使う）。折り返しを含む呼吸と区間をまたぐ呼吸は使わない
+        # Sweep speed (used to estimate Flow ticks). Breaths containing a wrap or spanning segments are not used
         if cursor_x_start is not None and cursor_x is not None and cursor_x > cursor_x_start \
                 and row["Start_Folder"] == row["End_Folder"] and end_iframe > start_iframe:
             sweep_rates.append((cursor_x - cursor_x_start) / ((end_iframe - start_iframe) / GS.FPS))
 
-        # 上書き処理
+        # Overwrite handling
         out_path = os.path.join(output_dir, f"{breath_num}.csv")
         if overwrite and os.path.exists(out_path):
             try:
@@ -1320,7 +1320,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
                 })
                 continue
 
-        # CSV 出力（末尾 30 点カット）
+        # CSV output (drop last 30 points)
         df_out = pd.DataFrame({"X": list(range(1, length + 1))})
         for name in ["Pressure", "Flow", "Volume", "Edi"]:
             values = waveforms.get(name, [np.nan] * length)
@@ -1352,24 +1352,24 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             },
         })
 
-    # ---- 軸スケールを推定して物理単位へ換算し、呼吸ごとのCSVを書き出す ----
+    # ---- Estimate axis scales, convert to physical units, and write per-breath CSVs ----
     rate = float(np.median(sweep_rates)) if len(sweep_rates) >= 3 else SWEEP_RATE_DEFAULT
     estimated = _estimate_scales(records, rate) if scale_enabled else {}
-    _trim_records_to_breaths(records, rate)   # 目盛りは切り詰める前の波形で推定する
+    _trim_records_to_breaths(records, rate)   # ticks are estimated from waveforms before trimming
     breath_wave_time = {}
     for rec in records:
         breath_num = rec["breath"]
-        df_out = rec["df"].iloc[rec["head"]:rec["tail"]].copy()   # X は元の列番号のまま
+        df_out = rec["df"].iloc[rec["head"]:rec["tail"]].copy()   # X keeps the original column indices
         breath_wave_time[breath_num] = (rec["wave_t0"], rate, rec["head"], len(rec["df"]) - rec["tail"])
         if scale_enabled:
             scale = dict(estimated.get(breath_num, {}))
-            # Edi は EdiPeak 値で校正する
+            # Edi is calibrated with the EdiPeak value
             edi_scale = _edi_scale_from_peak(rec["edi_peak"], rec["edi_full"])
             if edi_scale:
                 scale["Edi"] = edi_scale
-                last_edi_scale = edi_scale         # 有効な目盛りを記憶
+                last_edi_scale = edi_scale         # remember the valid scale
             elif last_edi_scale is not None:
-                # EdiPeakが*** (NaN) 等で校正不能 → 直前の有効な呼吸のEdi目盛りを流用する
+                # Cannot calibrate because EdiPeak is *** (NaN) etc. -> reuse the Edi scale of the last valid breath
                 scale["Edi"] = last_edi_scale
             for nm, sc in scale.items():
                 df_out[nm] = _pixels_to_physical(df_out[nm].tolist(), nm, sc)
@@ -1378,13 +1378,13 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
         df_out.to_csv(rec["out_path"], index=False)
         print(f"{rec['out_path']} created")
 
-        # サマリー/レポート
+        # Summary/report
         summary_records.append(rec["summary"])
         skip_logs.append({
             "BreathNumber": breath_num, "Status": "OK", "Reason": "", "Details": ""
         })
 
-    # ---- 呼吸ごとスケールを Breaths.csv 用に列展開（P_min,P_max,F_min,...）----
+    # ---- Expand per-breath scales into columns for Breaths.csv (P_min,P_max,F_min,...) ----
     if breath_scales:
         short = {"Pressure": "P", "Flow": "F", "Volume": "V", "Edi": "E"}
         def _sc(b, nm, key):
@@ -1396,7 +1396,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             breaths[f"{pfx}_min"] = breaths["BreathNumber"].map(lambda b, nm=nm: _sc(b, nm, "min"))
             breaths[f"{pfx}_max"] = breaths["BreathNumber"].map(lambda b, nm=nm: _sc(b, nm, "max"))
 
-    # ---- 診断用: 抽出波形領域の左右端x（X_Start/X_End）と検出カーソル位置を列展開 ----
+    # ---- Diagnostics: expand left/right x of extracted waveform region (X_Start/X_End) and detected cursor positions into columns ----
     def _xs(b, i):
         try:
             v = breath_xspan.get(int(b))
@@ -1408,7 +1408,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     breaths["Sweep_Cursor_Start"] = breaths["BreathNumber"].map(lambda b: _xs(b, 2))
     breaths["Sweep_Cursor_End"] = breaths["BreathNumber"].map(lambda b: _xs(b, 3))
 
-    # ---- v1.3: 波形の最初の点の時刻と掃引の速さ（アプリはこれで各点の時刻を求める）、削った行数 ----
+    # ---- v1.3: time of first waveform point and sweep speed (the app uses these to compute each point's time), rows trimmed ----
     def _wt(b, i):
         try:
             v = breath_wave_time.get(int(b))
@@ -1421,9 +1421,9 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     breaths["Wave_Trim_Tail"] = breaths["BreathNumber"].map(lambda b: _wt(b, 3))
     breaths = breaths.drop(columns=["_Start_Frame", "_End_Frame"])
 
-    # ---- レポート出力 ----
-    # 0.1.1: 波形を書き出す候補の呼吸が無い（呼吸の区切りが2つ以下。合わない動画など）と skip_logs が空になり、
-    # 列の無い表を並べ替えて KeyError で解析が止まっていた。空でも列を持つ表にする
+    # ---- Report output ----
+    # 0.1.1: when there were no candidate breaths to write (2 or fewer breath boundaries, e.g. mismatched video), skip_logs was empty and
+    # sorting a column-less table raised KeyError and stopped the analysis. Make it a table with columns even when empty
     report_df = pd.DataFrame(skip_logs, columns=["BreathNumber", "Status", "Reason", "Details"]).sort_values("BreathNumber")
     report_df.to_csv(report_path, index=False)
 
@@ -1431,51 +1431,51 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
 
 
 def re_extract_breath_waveform(img_start_path, img_end_path, end_iframe, scale=None):
-    """1呼吸の波形を start/end フレーム画像の差分から再抽出して DataFrame で返す。
+    """Re-extract one breath's waveform from the diff of start/end frame images and return it as a DataFrame.
 
-    BreathsToCSVs の波形抽出コア（差分領域→終端カーソル右の残像トリム→掃引折り返し領域選択→
-    領域結合→末尾の次呼吸トリム→Volume谷除去→末尾30点カット）と同一手順。
-    呼吸統合（Fragment等を前後と統合）後に、統合区間から1呼吸ぶんの清浄な波形を作り直す用途。
-    既存の {n}.csv どうしを連結すると2呼吸ぶんが積み重なって波形が崩れるため、必ず本関数で再抽出する。
-    v1.3: 呼吸の範囲への切り詰め（_trim_records_to_breaths）は時刻の情報が要るため、ここでは行わない。
+    Same procedure as the BreathsToCSVs waveform extraction core (diff regions -> trim afterimage right of end cursor -> sweep-wrap region selection ->
+    region concatenation -> trim next breath at end -> Volume trough removal -> drop last 30 points).
+    Used after breath merging (Fragments etc. merged with neighbors) to rebuild one clean breath waveform from the merged interval.
+    Concatenating existing {n}.csv files stacks two breaths and breaks the waveform, so always re-extract with this function.
+    v1.3: trimming to the breath span (_trim_records_to_breaths) needs timing info, so it is not done here.
 
     Parameters
     ----------
-    img_start_path : str   統合後呼吸の開始フレーム画像パス（=元の Start_File_Name 相当）
-    img_end_path   : str   統合後呼吸の終了フレーム画像パス（=次呼吸 Frame 相当の End_File_Name）
-    end_iframe     : int   終了フレームの iframe 番号（終端カーソル検出の直前フレーム導出に使用）
-    scale          : dict|None  {name: {"min":, "max":}} 指定時はピクセル→物理単位へ変換。
+    img_start_path : str   start frame image path of the merged breath (= original Start_File_Name)
+    img_end_path   : str   end frame image path of the merged breath (= End_File_Name, the next breath's Frame)
+    end_iframe     : int   iframe number of the end frame (used to derive the previous frame for end-cursor detection)
+    scale          : dict|None  {name: {"min":, "max":}} if given, convert pixels to physical units.
 
     Returns
     -------
-    pandas.DataFrame | None   列=[X, Pressure, Flow, Volume, Edi]。再抽出不能なら None。
+    pandas.DataFrame | None   columns=[X, Pressure, Flow, Volume, Edi]. None if re-extraction is impossible.
     """
     if not (os.path.isfile(img_start_path) and os.path.isfile(img_end_path)):
         return None
 
-    # 差分領域抽出
+    # Extract difference regions
     regions = get_difference_regions(img_end_path, img_start_path)
     if not regions:
         return None
 
-    # 終端カーソル右側の前掃引残像をトリム（直前フレームとの差分で先端を検出）
+    # Trim previous-sweep afterimage right of the end cursor (tip detected by diff with the previous frame)
     before_path = os.path.join(os.path.dirname(img_end_path),
                                f"frame_{int(end_iframe) - 1:08d}.jpg")
     if int(end_iframe) - 1 >= 0 and os.path.isfile(before_path):
         cursor_x = _detect_sweep_cursor(img_end_path, before_path)
         regions = _trim_regions_right_of_cursor(regions, cursor_x)
 
-    regions = _select_breath_regions(regions)   # 掃引折り返し時の残像断片を除去
+    regions = _select_breath_regions(regions)   # remove afterimage fragments on sweep wrap
 
-    # 波形抽出
+    # Waveform extraction
     waveforms = merge_waveforms_across_regions(img_end_path, regions)
-    waveforms = _trim_trailing_breath(waveforms)   # 末尾の次呼吸立ち上がりをトリム
-    waveforms = _reject_volume_troughs(waveforms)  # Volumeの非生理的V字谷を除去
+    waveforms = _trim_trailing_breath(waveforms)   # trim the next breath's rise at the end
+    waveforms = _reject_volume_troughs(waveforms)  # remove non-physiological V-troughs in Volume
     length = len(next(iter(waveforms.values()), []))
     if length == 0:
         return None
 
-    # 物理単位へ変換（scale={name:{min,max}}。Breaths.csv の P_min/P_max 等を流用すればOCR不要）
+    # Convert to physical units (scale={name:{min,max}}; reusing Breaths.csv P_min/P_max etc. avoids OCR)
     if scale:
         for nm in ["Pressure", "Flow", "Volume", "Edi"]:
             if nm in scale and nm in waveforms and scale[nm] is not None:
@@ -1485,7 +1485,7 @@ def re_extract_breath_waveform(img_start_path, img_end_path, end_iframe, scale=N
     for name in ["Pressure", "Flow", "Volume", "Edi"]:
         df_out[name] = waveforms.get(name, [np.nan] * length)
 
-    if len(df_out) <= 30:   # 末尾30点カット後に消えるなら短すぎ（BreathsToCSVsと同基準）
+    if len(df_out) <= 30:   # too short if nothing remains after dropping the last 30 points (same criterion as BreathsToCSVs)
         return None
     return df_out.iloc[:-30].reset_index(drop=True)
 
@@ -1493,17 +1493,17 @@ def re_extract_breath_waveform(img_start_path, img_end_path, end_iframe, scale=N
 def WaveFromCSV(csv_path):
     df = pd.read_csv(csv_path)
     
-    # X列があれば整列する
+    # Sort by X column if present
     if "X" in df.columns:
         df = df.sort_values(by="X").reset_index(drop=True)
-        globals()["x_start"] = df["X"].iloc[0]  # グローバル変数に記録
+        globals()["x_start"] = df["X"].iloc[0]  # record in a global variable
     
     waveforms = {}
     for name in ["Pressure", "Flow", "Volume", "Edi"]:
         if name in df.columns:
             waveforms[name] = df[name].to_numpy()
         else:
-            print(f"Warning: {name} 列が見つかりません。NaN で埋めます。")
+            print(f"Warning: {name} column not found. Filling with NaN.")
             waveforms[name] = np.full(len(df), np.nan)
    
 
@@ -1549,32 +1549,32 @@ def PlotWave(waveforms, x_vals=None, reference_waveforms=None):
 
 
 class AbnormalFrameDetector:
-    """v1.4: 異常フレーム（ポップアップなど）の判定を initial_ocr の中で、メモリにあるフレームで行う。
+    """v1.4: abnormal frame (e.g. popup) detection is done inside initial_ocr, on frames in memory.
 
-    v1.3 までは後処理の DetectAbnormalFrames が全フレームの JPEG を読み直していた（1時間の動画で 36,000 枚）。
-    判定の中身（ROI_LIST_Abnormal_Detection の範囲を基準と比べ、平均差・標準偏差の差・ヒストグラム相関の
-    どれかが閾値を超えたら異常）と閾値は v1.3 と同じ。
+    Up to v1.3, post-processing DetectAbnormalFrames re-read every frame's JPEG (36,000 images for a 1-hour video).
+    The criterion (compare ROI_LIST_Abnormal_Detection areas to a reference; abnormal if mean diff, std diff or histogram correlation
+    crosses its threshold) and the thresholds are the same as v1.3.
 
-    基準: v1.3 は動画の先頭の「黒でない」フレーム1枚だった。initial_ocr は区間（既定 60 秒）ごとに動くので、
-    区間の黒でないフレームの画素ごとの中央値にする（区間の先頭がポップアップでも基準が崩れないように）。
+    Reference: in v1.3 it was the first 'non-black' frame of the video. initial_ocr runs per segment (default 60 s), so
+    use the per-pixel median of the segment's non-black frames (so the reference holds even if the segment starts with a popup).
 
-    使い方: add(フレーム) を initial_ocr の行と同じ順に呼び、最後に results() で
-    [(Abnormal, MeanDiff, StdDiff, HistCorr), ...] を受け取る。
+    Usage: call add(frame) in the same order as initial_ocr rows, and finally get
+    [(Abnormal, MeanDiff, StdDiff, HistCorr), ...] from results().
     """
 
-    THRESH_MEAN = 30         # 平均差の閾値（大きいと異常）
-    THRESH_STD = 10          # 標準偏差の差（大きいと異常）
-    THRESH_HIST_CORR = 0.90  # ヒストグラム相関（小さいと異常）
-    BLACK_MEAN = 20          # 画面全体の平均がこれ以下のフレームは黒画面（基準に使わない）
-    MAX_REF_FRAMES = 200     # 基準の中央値に使うフレームの数の上限（等間隔に間引く）
+    THRESH_MEAN = 30         # mean-diff threshold (large = abnormal)
+    THRESH_STD = 10          # std diff (large = abnormal)
+    THRESH_HIST_CORR = 0.90  # histogram correlation (small = abnormal)
+    BLACK_MEAN = 20          # frames whose overall mean is at or below this are black screens (not used as reference)
+    MAX_REF_FRAMES = 200     # max number of frames for the reference median (evenly subsampled)
 
     def __init__(self, roi_list=None):
         self.roi_list = list(roi_list or Settings.ROI_LIST_Abnormal_Detection)
-        self.strips = []     # フレームごと: [ROIごとのグレースケール画像]
-        self.black = []      # フレームごと: 黒画面か
+        self.strips = []     # per frame: [grayscale image per ROI]
+        self.black = []      # per frame: whether it is a black screen
 
     def add(self, bgr):
-        """基準解像度（Settings.BASE_RESOLUTION）に揃えたカラーフレームを1枚加える。"""
+        """Add one color frame normalized to the base resolution (Settings.BASE_RESOLUTION)."""
         self.strips.append([cv2.cvtColor(bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
                             for (x1, y1, x2, y2) in self.roi_list])
         self.black.append(bool(bgr.mean() <= self.BLACK_MEAN))
@@ -1588,7 +1588,7 @@ class AbnormalFrameDetector:
         n = len(self.strips)
         normal = [i for i in range(n) if not self.black[i]]
         if not normal:
-            # 区間がすべて黒画面（または空）: 波形は読めないので異常にする
+            # Segment is all black (or empty): waveform unreadable, so mark abnormal
             return [(1, 0.0, 0.0, 0.0)] * n
         step = max(1, len(normal) // self.MAX_REF_FRAMES)
         sample = normal[::step]
@@ -1608,6 +1608,6 @@ class AbnormalFrameDetector:
                 if (mean_diff > self.THRESH_MEAN or std_diff > self.THRESH_STD
                         or hist_corr < self.THRESH_HIST_CORR):
                     abnormal = 1
-                    break  # どちらかで異常なら早期終了
+                    break  # exit early if abnormal by either
             out.append((abnormal, mean_diff, std_diff, hist_corr))
         return out
