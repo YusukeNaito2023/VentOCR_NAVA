@@ -137,12 +137,6 @@ Engine/NAVA/
 
 ---
 
-#### Diff Gating
-
-- Each ROI is OCRed again only when at least 0.5% of its pixels changed by 24 gray levels or more since its last OCR (`diff_px_level`, `diff_px_frac`); otherwise the last result is copied. Video noise never moves a pixel that much, and the smallest real change of a displayed value moves far more pixels.
-
----
-
 #### OCR Normalization
 
 - Remove multiple decimal points
