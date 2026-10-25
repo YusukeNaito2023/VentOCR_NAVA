@@ -36,8 +36,8 @@
       { "name": "Cdyn",       "label": "Cdyn (displayed)",       "unit": "mL/cmH2O", "format": "{:.1f}" }
     ],
     "alerts": [
-      { "name": "Two_Breath", "label": { "ja": "長さが前後の呼吸の 1.5 倍以上（2 呼吸が 1 つになった疑い）", "en": "At least 1.5x the neighbouring breaths (possibly two breaths merged)" }, "exclude_from_accuracy": true },
-      { "name": "Fragment",   "label": { "ja": "長さが前後の呼吸の半分以下（呼吸の断片の疑い）", "en": "At most half the neighbouring breaths (possibly a fragment)" }, "exclude_from_accuracy": true }
+      { "name": "Two_Breath", "label": "At least 1.5x the neighbouring breaths (possibly two breaths merged)", "exclude_from_accuracy": true },
+      { "name": "Fragment",   "label": "At most half the neighbouring breaths (possibly a fragment)", "exclude_from_accuracy": true }
     ]
   },
 
