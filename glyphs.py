@@ -23,14 +23,25 @@ MIN_CONTRAST = 50        # ROI max minus median gray level; less = no text (blan
 DIGIT_MIN_REL_H = 0.55   # blobs at least this fraction of the tallest blob are digits
 SMALL_MAX_REL = 0.4      # blobs at most this fraction of the digit height (both ways) are dots / colon parts
 KEYS_FOR_TEMPLATES = ("VTe", "EdiPeak", "Cdyn", "IE_Ratio", "Ppeak", "VTi")
+# 0.2.1: template sets named "<key>_wide" are for Settings.WIDE_ROIS (read with tight=True)
+WIDE_SUFFIX = "_wide"
 
 
-def ROI_DIGIT_BLOBS(roi):
-    """Gray ROI -> {"lab", "st", "digits": blob indices left to right, "tokens": [(x, "d"|"."|":", index)]}, or None."""
+def ROI_DIGIT_BLOBS(roi, tight=False):
+    """Gray ROI -> {"lab", "st", "digits": blob indices left to right, "tokens": [(x, "d"|"."|":", index)]}, or None.
+
+    tight (0.2.1, wide ROIs): the Otsu threshold is computed again on the box around the text (2 px margin), so it does
+    not depend on how much empty background the ROI has.
+    """
     roi = np.asarray(roi, np.uint8)
     if int(roi.max()) - int(np.median(roi)) < MIN_CONTRAST:
         return None
     _, bw = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if tight:
+        ys, xs = np.nonzero(bw)
+        box = roi[max(ys.min() - 2, 0):ys.max() + 3, max(xs.min() - 2, 0):xs.max() + 3]
+        t, _ = cv2.threshold(box, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        _, bw = cv2.threshold(roi, t, 255, cv2.THRESH_BINARY)
     _, lab, st, _ = cv2.connectedComponentsWithStats(bw, connectivity=8)
     st = st[1:]
     if not len(st):
@@ -70,17 +81,17 @@ class GlyphReader:
     def __init__(self, path):
         z = np.load(path)
         self.sets = {}
-        for key in KEYS_FOR_TEMPLATES:
-            if f"chars_{key}" in z:
-                chars = [str(c) for c in z[f"chars_{key}"]]
-                self.sets[key] = (chars, z[f"templates_{key}"].reshape(len(chars), -1), z[f"aspects_{key}"])
+        for key in [n[len("chars_"):] for n in z.files if n.startswith("chars_")]:
+            chars = [str(c) for c in z[f"chars_{key}"]]
+            self.sets[key] = (chars, z[f"templates_{key}"].reshape(len(chars), -1), z[f"aspects_{key}"])
 
     def read(self, roi, key):
-        """Gray ROI of `key` -> (text, min_score) or None (not readable by the templates: use EasyOCR)."""
+        """Gray ROI of `key` -> (text, min_score) or None (not readable by the templates: use EasyOCR).
+        key may be a wide set ("VTe_wide"): the ROI is then a Settings.WIDE_ROIS one and is thresholded tight."""
         if key not in self.sets:
             return None
         chars, templates, aspects = self.sets[key]
-        blobs = ROI_DIGIT_BLOBS(roi)
+        blobs = ROI_DIGIT_BLOBS(roi, tight=key.endswith(WIDE_SUFFIX))
         if blobs is None:
             return None
         width = blobs["lab"].shape[1]

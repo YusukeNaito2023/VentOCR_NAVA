@@ -131,10 +131,53 @@ def add_variants(npz_in, key, roi_dir, out):
     np.savez_compressed(out, **z)
 
 
+def rebuild_from_rois(npz_in, key, roi_dir, labels_csv, out, set_name=None):
+    """Write the template set `set_name` (default `key`) made from labelled ROI images (0.2.1: Settings.WIDE_ROIS).
+
+    The threshold of a ROI (Otsu) depends on the whole ROI, so templates made from a narrower ROI do not fit the blobs of
+    a wider one; a set whose name ends with glyphs.WIDE_SUFFIX is built (and read) with the tight threshold.
+    labels_csv: columns key, file, label (plain digits with an optional ".", e.g. the template read of the ROI on the
+    same frame); roi_dir: gray ROI images at BASE_RESOLUTION, cut the same way as the engine does.
+    Examples are used, averaged and cleaned as in main().
+    """
+    from glyphs import WIDE_SUFFIX
+    set_name = set_name or key
+    tight = set_name.endswith(WIDE_SUFFIX)
+    lab = pd.read_csv(labels_csv, dtype=str).fillna("")
+    lab = lab[(lab["key"] == key) & lab["label"].str.fullmatch(r"\d+(\.\d+)?")]
+    per_char = {}
+    for _, row in lab.iterrows():
+        blobs = ROI_DIGIT_BLOBS(cv2.imread(os.path.join(roi_dir, row["file"]), cv2.IMREAD_GRAYSCALE), tight=tight)
+        digits = re.sub(r"\D", "", row["label"])
+        if blobs is None or len(blobs["digits"]) != len(digits):
+            continue
+        for ch, i in zip(digits, blobs["digits"]):
+            per_char.setdefault(ch, []).append(glyph_vector(blobs, i))
+    z = dict(np.load(npz_in))
+    chars, templates, aspects, counts = [], [], [], []
+    for ch in sorted(per_char):
+        vecs = np.stack([v for v, _ in per_char[ch]]); asp = np.array([a for _, a in per_char[ch]])
+        mean = vecs.mean(0); mean /= np.linalg.norm(mean)
+        keep = (vecs.reshape(len(vecs), -1) @ mean.ravel()) >= 0.9
+        if not keep.any():
+            continue
+        mean = vecs[keep].mean(0); mean -= mean.mean(); mean /= np.linalg.norm(mean)
+        chars.append(ch); templates.append(mean); aspects.append(float(np.median(asp[keep]))); counts.append(int(keep.sum()))
+    z[f"templates_{set_name}"] = np.stack(templates).astype(np.float32)
+    z[f"aspects_{set_name}"] = np.array(aspects, np.float32)
+    z[f"chars_{set_name}"] = np.array(chars)
+    z[f"counts_{set_name}"] = np.array(counts)
+    print(set_name, dict(zip(chars, counts)))
+    np.savez_compressed(out, **z)
+
+
 if __name__ == "__main__":
     # python tools/build_value_glyphs.py PACKAGE OUT.npz [FRAMES_PER_SEGMENT]
     # python tools/build_value_glyphs.py --add-variants IN.npz KEY ROI_DIR OUT.npz
+    # python tools/build_value_glyphs.py --from-rois IN.npz KEY ROI_DIR LABELS.csv OUT.npz [SET_NAME]
     if sys.argv[1] == "--add-variants":
         add_variants(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    elif sys.argv[1] == "--from-rois":
+        rebuild_from_rois(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7] if len(sys.argv) > 7 else None)
     else:
         main(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 6)

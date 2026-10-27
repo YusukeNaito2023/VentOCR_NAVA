@@ -368,6 +368,10 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
 
                 if glyph_reader is not None:
                     g = glyph_reader.read(roi, key)
+                    if g is None and key in Settings.WIDE_ROIS:
+                        # 0.2.1: a 4-digit value is cut by the ROI; read the wider ROI (only when the ROI read failed)
+                        wx, wy, ww, wh = Settings.WIDE_ROIS[key]
+                        g = glyph_reader.read(image[wy:wy+wh, wx:wx+ww], key + glyphs.WIDE_SUFFIX)
                     if g is not None:
                         text, score = g
                         if key == "IE_Ratio":

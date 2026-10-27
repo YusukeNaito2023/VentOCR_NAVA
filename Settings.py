@@ -15,6 +15,15 @@ ROIs = {
     "VTi": [1139,382,55,30],      # The "VTi" number (ml). 68px above the VTe box
 }
 
+# 0.2.1: a 4-digit VTe / VTi (1000 ml or more) is wider than its ROI (about x 1136-1203), so its first and last digits
+# were cut and EasyOCR read the cut digit as a letter ("1009" -> "10Oc" -> 10). When the template read of the ROI fails,
+# these wider ROIs are read with their own templates (value_glyphs.npz sets "VTe_wide" / "VTi_wide"). The ROIs above
+# are not widened: their templates read 3-digit values more often than templates made from the wide ROIs.
+WIDE_ROIS = {
+    "VTe": [1125, 450, 90, 30],
+    "VTi": [1125, 382, 90, 30],
+}
+
 
 REFERENCE_IMAGE_PATH = 'normal.jpg' # This should be located in ./users/reference/
 
