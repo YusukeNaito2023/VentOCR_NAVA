@@ -9,6 +9,7 @@
 - Fewer misread values: Cdyn is the value shown at the end of the breath (the display often changes 1-3 frames after VTe); EasyOCR reads that are not a plain number are not used; Ti/Ttot has extra digit templates and needs two decimals.
 - VTe / VTi of 1000 ml or more are read correctly: their 4 digits are wider than the ROI, so a wider ROI is read with its own templates when the ROI cannot be read.
 - VTe / VTi reads above 5000 ml are not used (a frame caught while the display changes).
+- VTe skips a value seen only on the breath's last frame (the display can show the next breath's VTe one frame early).
 - New Alert Disconnect: VTe about 0 with VTi of 1000 ml or more and Cdyn "***" for 3 or more breaths (leak about 100%; possibly a disconnected circuit). Excluded from accuracy.
 - The display-update frame and the 2 frames after it are kept for post_ocr too, so the app rarely has to make images.
 

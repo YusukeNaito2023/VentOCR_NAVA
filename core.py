@@ -533,12 +533,10 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     df_breath["EdiPeak"] = df_breath["BreathNumber"].map(last_peak_per_breath)
 
 
-    # Fill in VTe
-    # For each BreathNumber, get the "last non-NaN VTe that appeared"
-    last_peak_per_breath = (
-        df.groupby("BreathNumber")["VTe"]
-        .apply(lambda s: s.dropna().iloc[-1] if not s.dropna().empty else np.nan)
-    )
+    # Fill in VTe: the last reading of the breath, except a value seen only on the breath's last frame (0.2.1: there the
+    # display sometimes already shows the next breath's VTe, one frame before the boundary; 4 breaths in the Servo-U
+    # 1-h video, e.g. 517 instead of 786)
+    last_peak_per_breath = df.groupby("BreathNumber")["VTe"].apply(_last_reading_settled)
 
     # Update all rows with the representative value
     df_breath["VTe"] = df_breath["BreathNumber"].map(last_peak_per_breath)
@@ -776,6 +774,16 @@ def normalize_ie_ratio(raw_texts: list[str], numeric_parts: list[str]) -> str:
         X = a / b
         X = max(1.0, round(X, 1))
         return f"{X:.1f}:1"
+
+def _last_reading_settled(s):
+    """Last non-NaN value of a breath's frames (in frame order); a value that appears only on the last frame is skipped."""
+    v = s.dropna()
+    if v.empty:
+        return np.nan
+    if len(v) >= 2 and v.index[-1] == s.index[-1] and (v == v.iloc[-1]).sum() == 1:
+        return v.iloc[-2]
+    return v.iloc[-1]
+
 
 def Shift_Values(df, column):
     # Take the first 5 frames of the next breath number and get the mode
