@@ -464,9 +464,14 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     _pp(f"post_ocr: assigning breath numbers ({len(df)} rows)")
     df = df.sort_values("Frame").reset_index(drop=True)
     df["IE_Ratio"] = df["IE_Ratio_raw"].apply(parse_IE_ratio)
-    for key in ("VTe", "EdiPeak", "Cdyn"):
+    for key in ("VTe", "EdiPeak", "Cdyn", "Ppeak", "VTi"):
         if key in df.columns:
             df[key] = pd.to_numeric(df[key], errors="coerce")
+    # 0.2.1: a VTe / VTi read above VOLUME_MAX_ML is not a value (a frame caught while the display changes, e.g. "11435"
+    # between 0.0 and 1435); the frame is left empty, so the breath keeps its last good reading
+    for key in ("VTe", "VTi"):
+        if key in df.columns:
+            df.loc[df[key] > VOLUME_MAX_ML, key] = np.nan
 
     # 0.2.0: breath boundaries are the ventilator's display updates, unchanged (no merging or splitting)
     df["BreathMark"] = breath_boundaries(df, GS.FPS)
@@ -502,7 +507,6 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     # Used for estimating waveform axis scales (ExtractWaves._estimate_scales)
     for key in ("Ppeak", "VTi"):
         if key in df.columns:
-            df[key] = pd.to_numeric(df[key], errors="coerce")
             df[f"Real_{key}"] = Shift_Values(df, key)
 
     # Also create a per-breath dataframe (v1.4: abnormal-detection columns would only hold the first frame's value, so they are not put in Breaths.csv)
@@ -860,6 +864,9 @@ def breath_boundaries(df, fps):
         marks[e] = 1
         last = e
     return marks
+
+
+VOLUME_MAX_ML = 5000.0         # 0.2.1: VTe / VTi reads above this are not values (physiologically impossible)
 
 
 # Alert Disconnect (0.2.1). While the circuit is open (Servo-U 1-h video, video 1423-1459 s and 1521-1551 s) the
