@@ -3,8 +3,8 @@
   "display_name": "NAVA",
   "developer": "VentOCR Developer Team",
   "version": "0.2.0",
-  "ventocr_min": "0.6.2",
-  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames are read at 1280x720 internally; coordinates are written in pixels of the analyzed video). 0.2.0: breaths are the ventilator's display updates (Cdyn/VTe), never merged or split; each breath is rebuilt from its last image using the pen tip tracked on every frame (Frames.csv Sweep_X), like the Hamilton engine; patient triggers come from the white part of the traces (Trigger, Trigger_Source). v1.3: waveform points are chosen from the vertical extent of the trace in each column (globally optimal path with peak/valley tips preserved), removing false spikes at steep transitions; Flow scale fit excludes steep segments. v1.4: abnormal frames (pop-ups) are detected in initial_ocr from in-memory frames (Frames.csv column Abnormal); post-processing reads only the frames used for waveform extraction (engine_api 3); frame counts follow GS.FPS (engine_api 2). v1.5: faster (same results as v1.4): grayscale and downscale only the regions read, reuse the EasyOCR reader, open frame images in ascending order.",
+  "ventocr_min": "0.8.0",
+  "description": "Servo-U ventilator Edi waveform OCR engine (resolution-independent; frames are read at 1280x720 internally; coordinates are written in pixels of the analyzed video). 0.2.0: numbers are read on every frame by digit templates (EasyOCR only as a fallback); breaths are the ventilator's display updates (Cdyn/VTe), never merged or split; each breath is rebuilt from its last image using the pen tip tracked on every frame (Frames.csv Sweep_X), like the Hamilton engine, from images kept during initial_ocr; patient triggers come from the white part of the traces (Trigger, Trigger_Source); Real_Cdyn is the breath's own Cdyn. v1.3-v1.5 (0.1.x): optimal-path waveform points, abnormal frames in initial_ocr, engine_api 3, faster region-only processing.",
   "engine_api": 3,
 
   "sample_video": "Sample_NAVA_VentOCR.mp4",

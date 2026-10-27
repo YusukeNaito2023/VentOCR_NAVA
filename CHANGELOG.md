@@ -1,7 +1,7 @@
 # CHANGELOG
 
-## 0.2.0 (unreleased)
-Results change (breath boundaries, waveforms, new columns). Same approach as the Hamilton engine.
+## 0.2.0 (2026-10-27)
+Results change (breath boundaries, waveforms, new columns). Same approach as the Hamilton engine. Needs VentOCR 0.8.0 or later (frames decoded straight from the video: exact frame times and much faster; one hour of Servo-U video took 792 s with NAVA 0.1.x on VentOCR 0.8.0 and 495 s with 0.2.0).
 
 ### Breath boundaries
 - A breath starts where the ventilator updates its per-breath displays: Cdyn or VTe shows a new value (or "***") for at least 0.3 s; updates within 0.5 s count as one boundary. The two displays change together at the start of each breath; VTe also splits breaths where Cdyn stays the same or shows "***".
@@ -36,7 +36,7 @@ Results change (breath boundaries, waveforms, new columns). Same approach as the
 - 3-minute Servo-U clip with the app's direct decode: 63-73 s -> 20 s (OCR stage 42-49 -> 15.6 s, post-processing 20-23 -> 4.0 s; images the app made 100 -> 7).
 
 ### Other
-- Breaths.csv `Real_Cdyn`: the Cdyn of the breath (the value shown at the start of the next breath, like Real_VTe; "***" -> empty). The `Cdyn` column stays the displayed value (the previous breath's).
+- Breaths.csv `Real_Cdyn`: the Cdyn of the breath (the value shown at the start of the next breath, like Real_VTe; "***" -> empty). The `Cdyn` column stays the displayed value (the previous breath's). On the one-hour Servo-U recording it equals the ventilator export in 98.0% of breaths as displayed (the screen shows Cdyn >= 100 as an integer; 85.4% to the export's decimal).
 - IE_Ratio (Ti/Ttot) of a breath is the last value read in the breath (it was the first frame's). The display sometimes updates 1-2 frames after Cdyn / VTe, so the first frame often showed the previous breath's value. On the one-hour Servo-U recording, agreement with the ventilator export rose from 73.6% to 81.6% (direct-decode frames: 69.0% to 72.5%).
 - Frames.csv `OCR_Count`: number of ROIs actually OCRed on the frame (the others reused the last result).
 - EdiPeak preprocessing runs only for ROIs that are OCRed (the diff gating compares the ROI before preprocessing).
