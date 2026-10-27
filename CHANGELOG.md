@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 0.2.1 (2026-10-27)
+Fewer misread values. Breath boundaries and waveforms are unchanged. Checked against the Servo Tracker export on two 3-minute clips of the Servo-U 1-h video (video 600-780 s and 1830-2010 s).
+
+- Breaths.csv `Cdyn` is what the display shows at the end of the breath ("***" -> empty). It was taken from the breath's first frame, but the Cdyn display often changes 1-3 frames after VTe (70 of 1010 breaths in the 1-h video), so it still showed the previous value. Breaths equal to the export as displayed, on the 1-h video's frames: 91.2% -> 98.2%. Clips: 51/57 -> 56/57 and 32/38 -> 38/38.
+- EasyOCR reads that are not a plain number are no longer used ("46]" for 461, "110z" for 1067, "31." for 31.7; Cdyn may still end with the star the Servo-U adds). The frame is left empty, and the breath takes its value from the frames that were read.
+- Ti/Ttot: a second template for digits drawn slightly differently (mostly the last digit: "0", "1", "2", "5", "8", and "4"). These failed the template check (score 0.74-0.90), and EasyOCR then often dropped a digit ("0.2" for 0.30 or 0.22). On 1780 Ti/Ttot images, one per second over 30 minutes, the templates now read 96.5% of images (was 71%). No reading changed, and the 40 new reads checked by eye were right. Made with `tools/build_value_glyphs.py --add-variants`.
+- Ti/Ttot reads without two decimals ("0.2") are left empty: the Servo-U always shows two decimals. Clip: 33/39 -> 36/39 breaths equal to the export.
+- Images kept for post_ocr (`NAVA_Kept`) now also include the display-update frame and the 2 frames after it (0, 1, 2, 5, 10 after the last frame before the update). In 0.2.0 the app still had to make 76 images per hour, most of them the update frame itself; on both clips it made none.
+
 ## 0.2.0 (2026-10-27)
 Results change (breath boundaries, waveforms, new columns). Same approach as the Hamilton engine. Needs VentOCR 0.8.0 or later (frames decoded straight from the video: exact frame times and much faster; one hour of Servo-U video took 792 s with NAVA 0.1.x on VentOCR 0.8.0 and 495 s with 0.2.0).
 

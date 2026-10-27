@@ -2,7 +2,12 @@
 
 ## Version
 
-0.2.0 (see CHANGELOG.md)
+0.2.1 (see CHANGELOG.md)
+
+### Changes in 0.2.1
+
+- Fewer misread values: Cdyn is the value shown at the end of the breath (the display often changes 1-3 frames after VTe); EasyOCR reads that are not a plain number are not used; Ti/Ttot has extra digit templates and needs two decimals.
+- The display-update frame and the 2 frames after it are kept for post_ocr too, so the app rarely has to make images.
 
 ### Changes in 0.2.0
 
@@ -133,7 +138,7 @@ Engine/NAVA/
 
 #### Template Reading
 
-- The numeric ROIs are read on every frame by digit template matching (`glyphs.py`, templates `value_glyphs.npz`, one set per ROI). EasyOCR is used only when the templates cannot read an ROI. New templates (another ventilator or screen) can be built with `tools/build_value_glyphs.py` from an analysis of a video of that screen.
+- The numeric ROIs are read on every frame by digit template matching (`glyphs.py`, templates `value_glyphs.npz`, one set per ROI). EasyOCR is used only when the templates cannot read an ROI, and its read is used only when it is a plain number (0.2.1). A digit may have a second template for a slightly different drawing (0.2.1: Ti/Ttot; `tools/build_value_glyphs.py --add-variants`). New templates (another ventilator or screen) can be built with `tools/build_value_glyphs.py` from an analysis of a video of that screen.
 
 ---
 

@@ -318,7 +318,7 @@ def initial_ocr(frames, total_frames, subfolder, settings={}, progress_callback=
                 ev["IE_Ratio_conf"] = ", ".join(f"{s:.2f}" for s in confidences)
             else:
                 value, raw_text, confidence = _parse_ocr_result(result)
-                ev[key] = value
+                ev[key] = value if _is_clean_number(key, raw_text) else ""
                 ev[f"{key}_raw"] = raw_text
                 ev[f"{key}_conf"] = confidence
 
@@ -506,6 +506,13 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     df_breath = df_breath.drop(columns=["Abnormal", "MeanDiff", "StdDiff", "HistCorr", "Sweep_Tip_Raw", "Sweep_U", "Sweep_X",
                                         "Sweep_Speed", "Frame_Width", "OCR_Count", "BreathMark"], errors="ignore")
 
+    # 0.2.1: Cdyn is what the display shows at the end of the breath ("***" -> NaN; unreadable frames carry the last
+    # reading). The Cdyn display often changes 1-3 frames after VTe (70 of 1010 breaths in the Servo-U 1-h video), so
+    # the first frame of a breath still showed the previous breath's Cdyn.
+    if "Cdyn" in df.columns:
+        cdyn_state = pd.to_numeric(_display_state(df, "Cdyn"), errors="coerce")
+        df_breath["Cdyn"] = df_breath["BreathNumber"].map(cdyn_state.groupby(df["BreathNumber"]).agg(lambda s: s.iloc[-1]))
+
 
     # Fill in Edi Peak
     # For each BreathNumber, get the "last non-NaN EdiPeak that appeared"
@@ -628,6 +635,16 @@ def _parse_ocr_result(result):
         cleaned_value = ""
 
     return cleaned_value, full_text, confidence_str
+
+
+def _is_clean_number(key, raw_text):
+    """0.2.1: an EasyOCR read is used only when its text is a plain number ("461", "7.3"; Cdyn may end with the star
+    the Servo-U puts after some values). Other characters mean a misread digit ("46]" for 461, "110z" for 1067,
+    "31." for 31.7); the value is then left empty, so the breath takes its value from the frames that were read."""
+    t = raw_text.replace(" ", "")
+    if key == "Cdyn":
+        t = t.rstrip("*")
+    return re.fullmatch(r"\d+(\.\d+)?", t) is not None
 
 
 def read_text(reader, roi):
@@ -1036,6 +1053,10 @@ def parse_IE_ratio(ie_raw):
         if t.startswith("."):
             t = "0" + t
         if re.fullmatch(r"0\.\d+", t):
+            # 0.2.1: the Servo-U shows Ti/Ttot with two decimals ("0.30"); another length is a misread that lost or
+            # added a digit ("0.2" for 0.30 or 0.22) and is left empty (the breath uses the other frames)
+            if not re.fullmatch(r"0\.\d\d", t):
+                return np.nan
             try:
                 val = float(t)
                 return val if 0.0 < val < 1.0 else 0.0

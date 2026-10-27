@@ -72,5 +72,69 @@ def main(pkg, out, per_seg=6):
     np.savez_compressed(out, **arrays)
 
 
+VARIANT_MIN_SCORE = 0.7     # a failing digit is labelled with its best template only if it scores at least this much
+VARIANT_MIN_MARGIN = 0.15   # ... and beats the second-best character by at least this much
+VARIANT_MIN_COUNT = 10      # a variant template needs at least this many examples
+
+
+def add_variants(npz_in, key, roi_dir, out):
+    """Add a second template for digits the templates of `key` do not read (0.2.1).
+
+    roi_dir: gray images of the ROI of `key` at BASE_RESOLUTION, cut the same way as the engine does (INTER_AREA, then
+    core._GRAY_WEIGHTS). A digit whose best score is below glyphs.MATCH_MIN is labelled with its best character when that
+    score is at least VARIANT_MIN_SCORE and VARIANT_MIN_MARGIN above the next character; per character the examples are
+    averaged (examples below 0.9 to the average are dropped) and the average is added as an extra template of that
+    character. Check the labels on images before using the result (the montage is written next to `out`).
+    """
+    from glyphs import GlyphReader, MATCH_MIN
+    import glob
+    reader = GlyphReader(npz_in)
+    chars, templates, aspects = reader.sets[key]
+    examples = {}
+    for fn in sorted(glob.glob(os.path.join(roi_dir, "*.png"))):
+        blobs = ROI_DIGIT_BLOBS(cv2.imread(fn, cv2.IMREAD_GRAYSCALE))
+        if blobs is None:
+            continue
+        for _, kind, i in blobs["tokens"]:
+            if kind != "d":
+                continue
+            vec, aspect = glyph_vector(blobs, i)
+            score = templates @ vec.ravel()
+            order = np.argsort(-score)
+            best, second = score[order[0]], score[order[1]]
+            ok_aspect = np.abs(aspects - aspect) <= 0.15
+            if (score[ok_aspect].max() if ok_aspect.any() else -1) >= MATCH_MIN:
+                continue
+            if best >= VARIANT_MIN_SCORE and best - second >= VARIANT_MIN_MARGIN:
+                examples.setdefault(chars[order[0]], []).append((vec, aspect))
+    z = dict(np.load(npz_in))
+    new_t, new_a, new_c, new_n, tiles = [], [], [], [], []
+    for ch in sorted(examples):
+        vecs = np.stack([v for v, _ in examples[ch]]); asp = np.array([a for _, a in examples[ch]])
+        mean = vecs.mean(0); mean /= np.linalg.norm(mean)
+        keep = (vecs.reshape(len(vecs), -1) @ mean.ravel()) >= 0.9
+        if keep.sum() < VARIANT_MIN_COUNT:
+            continue
+        mean = vecs[keep].mean(0); mean -= mean.mean(); mean /= np.linalg.norm(mean)
+        new_t.append(mean); new_a.append(float(np.median(asp[keep]))); new_c.append(ch); new_n.append(int(keep.sum()))
+        for v in vecs[keep][:12]:
+            tiles.append(((v - v.min()) / (np.ptp(v) or 1) * 255).astype(np.uint8))
+        tiles += [np.zeros((TEMPLATE_H, TEMPLATE_W), np.uint8)] * (-len(tiles) % 12)
+    print(key, "variants:", dict(zip(new_c, new_n)))
+    if new_t:
+        z[f"templates_{key}"] = np.concatenate([z[f"templates_{key}"], np.stack(new_t).astype(np.float32)])
+        z[f"aspects_{key}"] = np.concatenate([z[f"aspects_{key}"], np.array(new_a, np.float32)])
+        z[f"chars_{key}"] = np.concatenate([z[f"chars_{key}"], np.array(new_c)])
+        z[f"counts_{key}"] = np.concatenate([z[f"counts_{key}"], np.array(new_n)])
+        rows = [np.hstack(tiles[k:k + 12]) for k in range(0, len(tiles), 12)]
+        cv2.imwrite(os.path.splitext(out)[0] + f"_{key}_variants.png", cv2.resize(np.vstack(rows), None, fx=3, fy=3, interpolation=cv2.INTER_NEAREST))
+    np.savez_compressed(out, **z)
+
+
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 6)
+    # python tools/build_value_glyphs.py PACKAGE OUT.npz [FRAMES_PER_SEGMENT]
+    # python tools/build_value_glyphs.py --add-variants IN.npz KEY ROI_DIR OUT.npz
+    if sys.argv[1] == "--add-variants":
+        add_variants(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    else:
+        main(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 6)

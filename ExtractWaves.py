@@ -59,10 +59,12 @@ def _load_frame(path):
 # the waveform area KEEP_BOX (x1, y1, x2, y2 at BASE_RESOLUTION) of the last frame before each display update of
 # KEEP_TRIGGER_KEYS, of the frames KEEP_AFTER frames after it, and of the last frame of each segment, in
 # <work>/KEEP_DIR_NAME/<segment>/frame_<iFrame>.jpg. Other images (e.g. after a pop-up) come from the app as before.
+# 0.2.1: the update frame itself and the 2 frames after it are kept too (in 0.2.0 most images the app still made were
+# these: the display update was found 1-2 frames off the frame of the breath boundary)
 KEEP_DIR_NAME = "NAVA_Kept"
 KEEP_BOX = (130, 80, 900, 640)
 KEEP_TRIGGER_KEYS = ("Cdyn", "VTe")
-KEEP_AFTER = (5, 10)
+KEEP_AFTER = (0, 1, 2, 5, 10)
 START_BACK_SEC = 0.6   # start image is this many seconds before the breath boundary (fixed at 6 frames up to v1.3)
 FRAME_CACHE_SIZE = 8   # per breath we read 4 images: start, end, and the one just before each
 _frame_cache = None    # OrderedDict only during BreathsToCSVs (path -> base-resolution image)
