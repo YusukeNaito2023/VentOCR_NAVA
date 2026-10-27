@@ -548,6 +548,14 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
         )
         df_breath["IE_Ratio"] = df_breath["BreathNumber"].map(last_ie_per_breath)
 
+    # 0.2.1: Alert Disconnect (VTe about 0 with a large VTi and Cdyn "***", for several breaths)
+    disconnected = breath_disconnect(df, df_breath)
+    if disconnected:
+        df_breath["Alert"] = [",".join(dict.fromkeys([x for x in str(a).split(",") if x and x != "nan"] + ["Disconnect"]))
+                              if bn in disconnected else a for bn, a in zip(df_breath["BreathNumber"], df_breath["Alert"])]
+        df["Alert"] = df["BreathNumber"].map(dict(zip(df_breath["BreathNumber"], df_breath["Alert"])))
+        print(f"[post_ocr] Disconnect: {len(disconnected)} breaths")
+
 
 
 
@@ -852,6 +860,39 @@ def breath_boundaries(df, fps):
         marks[e] = 1
         last = e
     return marks
+
+
+# Alert Disconnect (0.2.1). While the circuit is open (Servo-U 1-h video, video 1423-1459 s and 1521-1551 s) the
+# breath's own VTe is 0.0-0.3 ml, VTi about 2050 ml (leak about 100%), and Cdyn shows "***". Single short or interrupted
+# breaths also show VTe about 0, so only runs of breaths are flagged.
+DISCONNECT_VTE_MAX = 5.0       # ml, the breath's own VTe (Real_VTe)
+DISCONNECT_VTI_MIN = 1000.0    # ml, the breath's VTi (Real_VTi)
+DISCONNECT_CDYN_STARS = 0.5    # more than this share of the breath's frames show Cdyn "***"
+DISCONNECT_MIN_RUN = 3         # breaths in a row (a single breath that does not match inside a run is filled in)
+
+
+def breath_disconnect(df, df_breath):
+    """Breath numbers with Alert Disconnect. df: frames (with Real_VTe, Real_VTi, Cdyn_raw); df_breath: one row per breath."""
+    if not {"Real_VTe", "Real_VTi", "Cdyn_raw"} <= set(df.columns) or df_breath.empty:
+        return set()
+    raw = df["Cdyn_raw"].fillna("").astype(str)
+    stars = (raw.str.contains(r"\*", regex=True) & ~raw.str.contains(r"\d", regex=True)).groupby(df["BreathNumber"]).mean()
+    b = df_breath.sort_values("BreathNumber")
+    bn = b["BreathNumber"].to_numpy()
+    hit = ((pd.to_numeric(b["Real_VTe"], errors="coerce") <= DISCONNECT_VTE_MAX)
+           & (pd.to_numeric(b["Real_VTi"], errors="coerce") >= DISCONNECT_VTI_MIN)
+           & (b["BreathNumber"].map(stars).fillna(0) > DISCONNECT_CDYN_STARS)).to_numpy()
+    filled = hit.copy()
+    filled[1:-1] |= hit[:-2] & hit[2:]
+    out, start = set(), None
+    for i, h in enumerate(np.r_[filled, False]):
+        if h and start is None:
+            start = i
+        elif not h and start is not None:
+            if i - start >= DISCONNECT_MIN_RUN:
+                out.update(int(x) for x in bn[start:i])
+            start = None
+    return out
 
 
 def breath_alerts(breath_numbers):

@@ -44,7 +44,8 @@
       { "name": "Short",      "label": "At most half the neighbouring breaths (possibly a misread display update)", "exclude_from_accuracy": true },
       { "name": "Long",       "label": "Longer than one sweep; only the part still on the screen", "exclude_from_accuracy": false },
       { "name": "Partial",    "label": "End of the waveform not on the screen yet", "exclude_from_accuracy": true },
-      { "name": "Abnormal",   "label": "Pop-up or another screen on the image of the breath (no waveform)", "exclude_from_accuracy": true }
+      { "name": "Abnormal",   "label": "Pop-up or another screen on the image of the breath (no waveform)", "exclude_from_accuracy": true },
+      { "name": "Disconnect", "label": "VTe about 0 with VTi of 1000 ml or more and Cdyn \"***\" for 3 or more breaths (leak about 100%; possibly a disconnected circuit)", "exclude_from_accuracy": true }
     ]
   },
 

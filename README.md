@@ -8,6 +8,7 @@
 
 - Fewer misread values: Cdyn is the value shown at the end of the breath (the display often changes 1-3 frames after VTe); EasyOCR reads that are not a plain number are not used; Ti/Ttot has extra digit templates and needs two decimals.
 - VTe / VTi of 1000 ml or more are read correctly: their 4 digits are wider than the ROI, so a wider ROI is read with its own templates when the ROI cannot be read.
+- New Alert Disconnect: VTe about 0 with VTi of 1000 ml or more and Cdyn "***" for 3 or more breaths (leak about 100%; possibly a disconnected circuit). Excluded from accuracy.
 - The display-update frame and the 2 frames after it are kept for post_ocr too, so the app rarely has to make images.
 
 ### Changes in 0.2.0
@@ -217,6 +218,7 @@ Breaths.csv / Frames.csv `Alert` (comma separated):
 | Long | Longer than one sweep: only the part still on the screen is written (`Wave_T0` is the oldest column on the screen, not the inspiration onset) |
 | Partial | The end of the waveform is not on the screen yet |
 | Abnormal | Pop-up or another screen on the image of the breath (no waveform) |
+| Disconnect | 0.2.1: the breath's own VTe ≤ 5 ml, VTi ≥ 1000 ml and Cdyn "***" on more than half of its frames, for 3 or more breaths in a row (one non-matching breath inside a run is included). Leak about 100%, possibly a disconnected circuit. Excluded from accuracy |
 
 ---
 
