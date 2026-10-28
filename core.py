@@ -497,14 +497,15 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     df["Time"] = df["Time"].apply(lambda x: f"{x.seconds//3600}:{(x.seconds%3600)//60:02}:{x.seconds%60:02}:{int(x.microseconds/10000):02}")
 
    
-   # Get VTi, VTe of the next breath (VTi etc. change midway, so take the first value; it reflects the actual tidal volume)
+    # Values shown at the start of the next breath (first 5 frames of the next breath). VTe and Cdyn are shown with a
+    # one-breath delay, so these are the breath's own VTe / Cdyn. Ppeak / VTi from the next breath are used only for the
+    # waveform axis scales (ExtractWaves._estimate_scales; 0.2.1: kept as up to 0.2.0, the breath's own VTi made the
+    # Volume scale worse). Frames.csv keeps these columns as before.
     df['Real_VTe'] = Shift_Values(df, "VTe")
     # 0.2.0: Cdyn is shown with the same delay as VTe (updated at the start of the next breath), so the value at the start
     # of the next breath is this breath's Cdyn ("***" -> NaN)
     if "Cdyn" in df.columns:
         df["Real_Cdyn"] = Shift_Values(df.assign(Cdyn=pd.to_numeric(df["Cdyn"], errors="coerce")), "Cdyn")
-    # Ppeak / VTi are also updated at the end of a breath (= start of the next breath), so the value at the start of the next breath is that breath's value.
-    # Used for estimating waveform axis scales (ExtractWaves._estimate_scales)
     for key in ("Ppeak", "VTi"):
         if key in df.columns:
             df[f"Real_{key}"] = Shift_Values(df, key)
@@ -522,15 +523,10 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
         df_breath["Cdyn"] = df_breath["BreathNumber"].map(cdyn_state.groupby(df["BreathNumber"]).agg(lambda s: s.iloc[-1]))
 
 
-    # Fill in Edi Peak
-    # For each BreathNumber, get the "last non-NaN EdiPeak that appeared"
-    last_peak_per_breath = (
-        df.groupby("BreathNumber")["EdiPeak"]
-        .apply(lambda s: s.dropna().iloc[-1] if not s.dropna().empty else np.nan)
-    )
-
-    # Update all rows with the representative value
-    df_breath["EdiPeak"] = df_breath["BreathNumber"].map(last_peak_per_breath)
+    # Edi peak as shown at the end of the breath ("***" -> NaN; unreadable frames carry the last reading)
+    if "EdiPeak" in df.columns:
+        edi_state = pd.to_numeric(_display_state(df, "EdiPeak", skip_abnormal=False), errors="coerce")
+        df_breath["EdiPeak"] = df_breath["BreathNumber"].map(edi_state.groupby(df["BreathNumber"]).agg(lambda s: s.iloc[-1]))
 
 
     # Fill in VTe: the last reading of the breath, except a value seen only on the breath's last frame (0.2.1: there the
@@ -549,6 +545,8 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
             .apply(lambda s: s.dropna().iloc[-1] if not s.dropna().empty else np.nan)
         )
         df_breath["IE_Ratio"] = df_breath["BreathNumber"].map(last_ie_per_breath)
+
+    df_breath = breath_columns(df, df_breath)
 
     # 0.2.1: Alert Disconnect (VTe about 0 with a large VTi and Cdyn "***", for several breaths)
     disconnected = breath_disconnect(df, df_breath)
@@ -580,8 +578,9 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
     # Exclude breaths marked Abnormal and write the rest to individual CSVs
     _pp(f"post_ocr: writing per-breath CSVs ({len(df_breath)} breaths)")
     print(f"[post_ocr] BreathsToCSVs starting ({len(df_breath)} breaths)...")
-    # Axis scales are estimated from Real_Ppeak / Real_VTi and the waveforms (axis numbers are not OCRed, so no reader is needed)
+    # Axis scales are estimated from Scale_Ppeak / Scale_VTi / EdiPeak and the waveforms (axis numbers are not OCRed, so no reader is needed)
     Effective_Breaths, df_breath = ew.BreathsToCSVs(df_breath,df_frames,GS.Dir_Frames(user_ID),GS.Dir_BreathCSVs(user_ID), user_ID, analyze_id=Analyze_Id, settings=settings)
+    df_breath = df_breath.drop(columns=list(SCALE_ONLY_COLUMNS.values()), errors="ignore")
     print(f"[post_ocr] BreathsToCSVs done ({Effective_Breaths} effective breaths)")
 
     
@@ -602,7 +601,8 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
             f.write(f"{w}\n")
         f.write("\n")
         f.write("[fields]\n")
-        for field in ["Cdyn", "VTe", "EdiPeak", "Real_VTe", "Real_Cdyn", "Real_Ppeak", "Real_VTi", "Trigger", "Trigger_Source", "Alert"]:
+        for field in ["VTe", "VTi", "Ppeak", "Cdyn", "EdiPeak", "TiTtot", "VTe_displayed", "Cdyn_displayed", "EdiPeak_displayed",
+                      "TiTtot_displayed", "Trigger", "Trigger_Source", "Alert"]:
             f.write(f"{field}\n")
 
     # Save scale_meta.json (Engine-specific scale adjustment settings: step width / unit / symmetry).
@@ -804,6 +804,43 @@ def Shift_Values(df, column):
     return df['BreathNumber'].map(next_values)
 
 
+# ---- Breaths.csv columns (0.2.1) ----
+# The breath's own value has the plain name; what the screen showed has the suffix _displayed:
+#   VTe / Cdyn             first 5 frames of the next breath (shown with a one-breath delay)
+#   VTe_displayed / ...    the screen during the breath (VTe: last reading; Cdyn, EdiPeak: end of the breath)
+#   VTi / Ppeak            last reading of the breath (both are on the screen at the end of the breath)
+#   TiTtot                 TiTtot_displayed of the next breath (the display is updated after the breath)
+#   EdiPeak                EdiPeak_displayed, empty when the screen still held the previous breath's value or showed "***"
+# Up to 0.2.0: VTe_displayed was VTe, VTe was Real_VTe, Cdyn_displayed / Cdyn were Cdyn / Real_Cdyn, TiTtot_displayed was
+# IE_Ratio, VTi / Ppeak were Real_VTi / Real_Ppeak (first 5 frames of the next breath) and the first frame's VTi / Ppeak
+# were also written.
+DISPLAYED_COLUMNS = {"VTe": "VTe_displayed", "Cdyn": "Cdyn_displayed", "IE_Ratio": "TiTtot_displayed", "EdiPeak": "EdiPeak_displayed"}
+ACTUAL_COLUMNS = {"Real_VTe": "VTe", "Real_Cdyn": "Cdyn"}
+SCALE_ONLY_COLUMNS = {"Real_Ppeak": "Scale_Ppeak", "Real_VTi": "Scale_VTi"}   # used by the axis scales, not written
+
+
+def _last_reading(s):
+    v = s.dropna()
+    return v.iloc[-1] if not v.empty else np.nan
+
+
+def breath_columns(df, df_breath):
+    """Rename the per-breath values to the Breaths.csv names and add VTi, Ppeak, TiTtot and EdiPeak (see above).
+    df: frames; df_breath: one row per breath in BreathNumber order, with VTe / Cdyn / IE_Ratio / EdiPeak as displayed."""
+    own = {key: df.groupby("BreathNumber")[key].agg(_last_reading) for key in ("VTi", "Ppeak") if key in df.columns}
+    b = df_breath.drop(columns=["VTi", "Ppeak"], errors="ignore")
+    b = b.rename(columns=DISPLAYED_COLUMNS).rename(columns=ACTUAL_COLUMNS).rename(columns=SCALE_ONLY_COLUMNS)
+    for key, values in own.items():
+        b[key] = b["BreathNumber"].map(values)
+    if "TiTtot_displayed" in b:
+        b["TiTtot"] = b["TiTtot_displayed"].shift(-1)
+    if "EdiPeak_displayed" in b:
+        shown = pd.to_numeric(b["EdiPeak_displayed"], errors="coerce")
+        held = shown.eq(shown.shift(1))
+        b["EdiPeak"] = shown.where(~held)
+    return b
+
+
 def most_frequent(series):
     mode_values = series.dropna().mode()
     return mode_values.iloc[0] if not mode_values.empty else None
@@ -824,13 +861,15 @@ SHORT_RATIO = 0.5       # Alert Short: at most this many times the moving averag
 LENGTH_WINDOW = 30      # breaths in the moving average
 
 
-def _display_state(df, key):
-    """Shown value of a display per frame: the number, "***" (no value), or None (not readable / abnormal frame, carried forward)."""
+def _display_state(df, key, skip_abnormal=True):
+    """Shown value of a display per frame: the number, "***" (no value), or None (not readable / abnormal frame, carried forward).
+    skip_abnormal=False keeps the reads of Abnormal frames (EdiPeak: the alarm banner of a disconnection marks frames
+    Abnormal while the Edi display is still read correctly)."""
     val = pd.to_numeric(df[key], errors="coerce")
     raw = df.get(f"{key}_raw", pd.Series("", index=df.index)).fillna("").astype(str)
     stars = raw.str.contains(r"\*", regex=True) & ~raw.str.contains(r"\d", regex=True)
     state = pd.Series([f"{v:g}" if np.isfinite(v) else ("***" if st else None) for v, st in zip(val, stars)], index=df.index, dtype=object)
-    if "Abnormal" in df:
+    if skip_abnormal and "Abnormal" in df:
         state[pd.to_numeric(df["Abnormal"], errors="coerce").fillna(0).to_numpy() == 1] = None
     return state.ffill()
 
@@ -880,22 +919,22 @@ VOLUME_MAX_ML = 5000.0         # 0.2.1: VTe / VTi reads above this are not value
 # Alert Disconnect (0.2.1). While the circuit is open (Servo-U 1-h video, video 1423-1459 s and 1521-1551 s) the
 # breath's own VTe is 0.0-0.3 ml, VTi about 2050 ml (leak about 100%), and Cdyn shows "***". Single short or interrupted
 # breaths also show VTe about 0, so only runs of breaths are flagged.
-DISCONNECT_VTE_MAX = 5.0       # ml, the breath's own VTe (Real_VTe)
-DISCONNECT_VTI_MIN = 1000.0    # ml, the breath's VTi (Real_VTi)
+DISCONNECT_VTE_MAX = 5.0       # ml, the breath's own VTe (Breaths.csv VTe)
+DISCONNECT_VTI_MIN = 1000.0    # ml, the breath's own VTi (Breaths.csv VTi)
 DISCONNECT_CDYN_STARS = 0.5    # more than this share of the breath's frames show Cdyn "***"
 DISCONNECT_MIN_RUN = 3         # breaths in a row (a single breath that does not match inside a run is filled in)
 
 
 def breath_disconnect(df, df_breath):
-    """Breath numbers with Alert Disconnect. df: frames (with Real_VTe, Real_VTi, Cdyn_raw); df_breath: one row per breath."""
-    if not {"Real_VTe", "Real_VTi", "Cdyn_raw"} <= set(df.columns) or df_breath.empty:
+    """Breath numbers with Alert Disconnect. df: frames (with Cdyn_raw); df_breath: one row per breath (breath_columns)."""
+    if "Cdyn_raw" not in df.columns or not {"VTe", "VTi"} <= set(df_breath.columns) or df_breath.empty:
         return set()
     raw = df["Cdyn_raw"].fillna("").astype(str)
     stars = (raw.str.contains(r"\*", regex=True) & ~raw.str.contains(r"\d", regex=True)).groupby(df["BreathNumber"]).mean()
     b = df_breath.sort_values("BreathNumber")
     bn = b["BreathNumber"].to_numpy()
-    hit = ((pd.to_numeric(b["Real_VTe"], errors="coerce") <= DISCONNECT_VTE_MAX)
-           & (pd.to_numeric(b["Real_VTi"], errors="coerce") >= DISCONNECT_VTI_MIN)
+    hit = ((pd.to_numeric(b["VTe"], errors="coerce") <= DISCONNECT_VTE_MAX)
+           & (pd.to_numeric(b["VTi"], errors="coerce") >= DISCONNECT_VTI_MIN)
            & (b["BreathNumber"].map(stars).fillna(0) > DISCONNECT_CDYN_STARS)).to_numpy()
     filled = hit.copy()
     filled[1:-1] |= hit[:-2] & hit[2:]

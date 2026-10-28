@@ -158,13 +158,15 @@ TIP_SUPPORT_PX = 1.5
 #  Axis scale (vertical tick) estimation
 #  The axis numbers at the panel's top-left are only 7-8px tall at 1280x720, so OCR almost never works
 #  (80->30, 100/110->unreadable). Instead, back-calculate per breath from the large on-screen values on the right and the waveform pixels.
-#      Pressure: Real_Ppeak(cmH2O) <-> waveform peak pixel. Proportional by height from the 0 cmH2O baseline (faint horizontal line)
-#      Volume:   Real_VTi(ml) <-> waveform peak pixel (0 ml = band bottom)
+#      Pressure: Scale_Ppeak(cmH2O) <-> waveform peak pixel. Proportional by height from the 0 cmH2O baseline (faint horizontal line)
+#      Volume:   Scale_VTi(ml) <-> waveform peak pixel (0 ml = band bottom)
+#      (Scale_Ppeak / Scale_VTi: the values shown at the start of the next breath, core.SCALE_ONLY_COLUMNS; not written)
 #      Flow:     no displayed value, so solve so that the integral of Flow pixels matches the Volume (ml) change
 #  The resulting 'band top value' is rounded to the tick step (SCALE_SNAP), and outliers removed by the mode of neighboring breaths.
 #  With Auto Scaling the ticks change per breath (in the 2026-06-01 video, Flow moved between 60-110 and Volume 550-850),
 #  so estimate per breath. Computation is just pixel arithmetic, so doing it for all breaths is cheap.
-#  Edi is calibrated by EdiPeak as before (_edi_scale_from_peak).
+#  Edi is calibrated by EdiPeak as before (_edi_scale_from_peak). 0.2.1: EdiPeak is empty on breaths where the screen
+#  held the previous value or showed "***"; those breaths take the previous breath's Edi scale.
 # ============================================================================
 SCALE_UNITS = {"Pressure": "cmH2O", "Flow": "L/min", "Volume": "mL", "Edi": "uV"}
 # Step size for manual chart scale adjustment (+/-) (engine-specific).
@@ -911,8 +913,8 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
                                static=static_white[:, pl["xs"]] if static_white is not None else None)
         records.append({
             "breath": pl["bn"], "k": pl["k"], "c0": c0, "c1": c1, "waves": waves, "zero": pl["zero"],
-            "ppeak": breaths.at[pl["k"], "Real_Ppeak"] if "Real_Ppeak" in breaths else np.nan,
-            "vti": breaths.at[pl["k"], "Real_VTi"] if "Real_VTi" in breaths else np.nan,
+            "ppeak": breaths.at[pl["k"], "Scale_Ppeak"] if "Scale_Ppeak" in breaths else np.nan,
+            "vti": breaths.at[pl["k"], "Scale_VTi"] if "Scale_VTi" in breaths else np.nan,
             "edi_peak": breaths.at[pl["k"], "EdiPeak"] if "EdiPeak" in breaths else np.nan,
             "edi_full": waves["Edi"], "marks": marks, "alerts": alerts,
             "start_name": path_of(pl["s"]), "end_name": path_of(pl["img"]),

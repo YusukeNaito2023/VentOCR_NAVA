@@ -6,6 +6,7 @@
 
 ### Changes in 0.2.1
 
+- Breaths.csv columns renamed: the breath's own value has the plain name (`VTe`, `VTi`, `Ppeak`, `Cdyn`, `EdiPeak`, `TiTtot`) and what the screen showed has the suffix `_displayed` (`VTe_displayed`, `Cdyn_displayed`, `EdiPeak_displayed`, `TiTtot_displayed`). Up to 0.2.0: `Real_VTe`, `Real_VTi`, `Real_Ppeak`, `Real_Cdyn`, `VTe`, `Cdyn`, `EdiPeak`, `IE_Ratio`. `VTi` / `Ppeak` are now the last reading of the breath, `TiTtot` is the value shown after the breath, and `EdiPeak` is empty when the screen held the previous breath's value or showed "***" (see 3.3). Frames.csv is unchanged.
 - Fewer misread values: Cdyn is the value shown at the end of the breath (the display often changes 1-3 frames after VTe); EasyOCR reads that are not a plain number are not used; Ti/Ttot has extra digit templates and needs two decimals.
 - VTe / VTi of 1000 ml or more are read correctly: their 4 digits are wider than the ROI, so a wider ROI is read with its own templates when the ROI cannot be read.
 - VTe / VTi reads above 5000 ml are not used (a frame caught while the display changes).
@@ -220,18 +221,27 @@ Breaths.csv / Frames.csv `Alert` (comma separated):
 | Long | Longer than one sweep: only the part still on the screen is written (`Wave_T0` is the oldest column on the screen, not the inspiration onset) |
 | Partial | The end of the waveform is not on the screen yet |
 | Abnormal | Pop-up or another screen on the image of the breath (no waveform) |
-| Disconnect | 0.2.1: the breath's own VTe ≤ 5 ml, VTi ≥ 1000 ml and Cdyn "***" on more than half of its frames, for 3 or more breaths in a row (one non-matching breath inside a run is included). Leak about 100%, possibly a disconnected circuit. Excluded from accuracy |
+| Disconnect | 0.2.1: the breath's VTe ≤ 5 ml, VTi ≥ 1000 ml and Cdyn "***" on more than half of its frames, for 3 or more breaths in a row (one non-matching breath inside a run is included). Leak about 100%, possibly a disconnected circuit. Excluded from accuracy |
 
 ---
 
-#### 3.3 Real VTe / Real Cdyn Assignment
+#### 3.3 Breath values (Breaths.csv, 0.2.1)
 
-- The ventilator shows VTe and Cdyn of a breath at the start of the next breath (the `VTe` and `Cdyn` columns of a breath are the previous breath's values)
-- The values shown at the start of the next breath are assigned to the breath as:
+- The ventilator shows some values of a breath only after it: VTe and Cdyn at the start of the next breath, Ti/Ttot shortly after the breath ends. VTi and Ppeak are on the screen at the end of the breath (Ppeak when the pressure peak is reached, VTi when the breath turns to expiration).
+- The breath's own value has the plain name; what the screen showed during the breath has the suffix `_displayed`:
 
-```
-Real_VTe, Real_Cdyn
-```
+| Column | Value |
+|---|---|
+| `VTe`, `Cdyn` | Shown at the start of the next breath (mode of its first 5 frames; Cdyn "***" -> empty) |
+| `VTi`, `Ppeak` | Last reading of the breath |
+| `TiTtot` | `TiTtot_displayed` of the next breath |
+| `EdiPeak` | `EdiPeak_displayed`, but empty when it equals the previous breath's (the screen held the value) or the screen showed "***" |
+| `VTe_displayed` | Last reading of the breath, except a value seen only on its last frame (often the previous breath's VTe) |
+| `Cdyn_displayed`, `EdiPeak_displayed` | Shown at the end of the breath ("***" -> empty) |
+| `TiTtot_displayed` | Last reading of the breath (Ti/Ttot = I/(I+E)) |
+
+- The waveform axis scales use the VTi / Ppeak shown at the start of the next breath (as up to 0.2.0; not written) and `EdiPeak` (breaths with an empty `EdiPeak` take the previous breath's Edi scale).
+- Up to 0.2.0 the names were `Real_VTe`, `Real_Cdyn`, `Real_VTi`, `Real_Ppeak` (VTi / Ppeak from the first 5 frames of the next breath), `VTe`, `Cdyn`, `EdiPeak` and `IE_Ratio`, and the breath's first frame's VTi / Ppeak were also written.
 
 ---
 
@@ -282,13 +292,12 @@ df_frames
 df_breath
 ```
 
-Includes:
+Includes (see 3.3):
 
-- Cdyn
-- VTe
-- Real_VTe
-- Real_Cdyn
 - BreathNumber
+- VTe, VTi, Ppeak, Cdyn, EdiPeak, TiTtot
+- VTe_displayed, Cdyn_displayed, EdiPeak_displayed, TiTtot_displayed
+- Trigger, Trigger_Source, Wave_T0, Wave_Rate, Alert
 
 ---
 
