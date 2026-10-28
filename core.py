@@ -813,7 +813,7 @@ def Shift_Values(df, column):
 #   EdiPeak                EdiPeak_displayed, empty when the screen still held the previous breath's value or showed "***"
 # Up to 0.2.0: VTe_displayed was VTe, VTe was Real_VTe, Cdyn_displayed / Cdyn were Cdyn / Real_Cdyn, TiTtot_displayed was
 # IE_Ratio, VTi / Ppeak were Real_VTi / Real_Ppeak (first 5 frames of the next breath) and the first frame's VTi / Ppeak
-# were also written.
+# were also written, with the OCR text / confidence (_raw / _conf) of the first frame.
 DISPLAYED_COLUMNS = {"VTe": "VTe_displayed", "Cdyn": "Cdyn_displayed", "IE_Ratio": "TiTtot_displayed", "EdiPeak": "EdiPeak_displayed"}
 ACTUAL_COLUMNS = {"Real_VTe": "VTe", "Real_Cdyn": "Cdyn"}
 SCALE_ONLY_COLUMNS = {"Real_Ppeak": "Scale_Ppeak", "Real_VTi": "Scale_VTi"}   # used by the axis scales, not written
@@ -828,7 +828,8 @@ def breath_columns(df, df_breath):
     """Rename the per-breath values to the Breaths.csv names and add VTi, Ppeak, TiTtot and EdiPeak (see above).
     df: frames; df_breath: one row per breath in BreathNumber order, with VTe / Cdyn / IE_Ratio / EdiPeak as displayed."""
     own = {key: df.groupby("BreathNumber")[key].agg(_last_reading) for key in ("VTi", "Ppeak") if key in df.columns}
-    b = df_breath.drop(columns=["VTi", "Ppeak"], errors="ignore")
+    # the OCR text and confidence (_raw / _conf) of the breath's first frame are not written (they are in Frames.csv)
+    b = df_breath.drop(columns=["VTi", "Ppeak"] + [c for c in df_breath.columns if c.endswith(("_raw", "_conf"))], errors="ignore")
     b = b.rename(columns=DISPLAYED_COLUMNS).rename(columns=ACTUAL_COLUMNS).rename(columns=SCALE_ONLY_COLUMNS)
     for key, values in own.items():
         b[key] = b["BreathNumber"].map(values)

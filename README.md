@@ -241,7 +241,7 @@ Breaths.csv / Frames.csv `Alert` (comma separated):
 | `TiTtot_displayed` | Last reading of the breath (Ti/Ttot = I/(I+E)) |
 
 - The waveform axis scales use the VTi / Ppeak shown at the start of the next breath (as up to 0.2.0; not written) and `EdiPeak` (breaths with an empty `EdiPeak` take the previous breath's Edi scale).
-- Up to 0.2.0 the names were `Real_VTe`, `Real_Cdyn`, `Real_VTi`, `Real_Ppeak` (VTi / Ppeak from the first 5 frames of the next breath), `VTe`, `Cdyn`, `EdiPeak` and `IE_Ratio`, and the breath's first frame's VTi / Ppeak were also written.
+- Up to 0.2.0 the names were `Real_VTe`, `Real_Cdyn`, `Real_VTi`, `Real_Ppeak` (VTi / Ppeak from the first 5 frames of the next breath), `VTe`, `Cdyn`, `EdiPeak` and `IE_Ratio`, and the breath's first frame's VTi / Ppeak and OCR text / confidence (`*_raw`, `*_conf`, still in Frames.csv) were also written.
 
 ---
 
