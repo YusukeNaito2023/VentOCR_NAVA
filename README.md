@@ -13,6 +13,7 @@
 - VTe skips a value seen only on the breath's last frame (the display can show the next breath's VTe one frame early).
 - New Alert Disconnect: VTe about 0 with VTi of 1000 ml or more and Cdyn "***" for 3 or more breaths (leak about 100%; possibly a disconnected circuit). Excluded from accuracy.
 - The display-update frame and the 2 frames after it are kept for post_ocr too, so the app rarely has to make images.
+- Waveform axis scales come from the axis labels on the breath's image where they can be read (`axis_labels.py`, templates `axis_labels.npz`); otherwise the estimate is used as before (see 4.2).
 
 ### Changes in 0.2.0
 
@@ -80,6 +81,9 @@ The engine is optimized for GPU acceleration.
 Engine/NAVA/
 ├ core.py
 ├ ExtractWaves.py
+├ glyphs.py, value_glyphs.npz        (digit templates of the numeric ROIs)
+├ axis_labels.py, axis_labels.npz    (templates of the waveform axis labels, 0.2.1)
+├ tools/build_value_glyphs.py, tools/build_axis_labels.py
 ├ sample_frame.jpg
 └ README.md
 ```
@@ -240,7 +244,7 @@ Breaths.csv / Frames.csv `Alert` (comma separated):
 | `Cdyn_displayed`, `EdiPeak_displayed` | Shown at the end of the breath ("***" -> empty) |
 | `TiTtot_displayed` | Last reading of the breath (Ti/Ttot = I/(I+E)) |
 
-- The waveform axis scales use the VTi / Ppeak shown at the start of the next breath (as up to 0.2.0; not written) and `EdiPeak` (breaths with an empty `EdiPeak` take the previous breath's Edi scale).
+- Where an axis label cannot be read (see 4.2), the waveform axis scale is estimated from the VTi / Ppeak shown at the start of the next breath (as up to 0.2.0; not written) and `EdiPeak` (breaths with an empty `EdiPeak` take the previous breath's Edi scale).
 - Up to 0.2.0 the names were `Real_VTe`, `Real_Cdyn`, `Real_VTi`, `Real_Ppeak` (VTi / Ppeak from the first 5 frames of the next breath), `VTe`, `Cdyn`, `EdiPeak` and `IE_Ratio`, and the breath's first frame's VTi / Ppeak and OCR text / confidence (`*_raw`, `*_conf`, still in Frames.csv) were also written.
 
 ---
@@ -264,6 +268,16 @@ Abnormal = 1
 
 #### 4.2 BreathsToCSVs()
 
+- Axis scales (0.2.1, `P_min` / `P_max`, `F_min` / `F_max`, `V_max`, `E_max`): the labels at the left edge of each band
+  (top of every band, bottom of Pressure and Flow) are read on the image the breath's waveform is read from
+  (`axis_labels.py`). At 1280x720 the digits are 7-8 px tall and blurred, so each label is compared as a whole with
+  the labels in `axis_labels.npz` (RMS difference of the gray levels; the same label about 1.5, a different label 7.6
+  or more, also one without a template). A label is used only when its best template is within 4.5 and the next best
+  is at least 3 further away; pixels of a waveform crossing the label are left out (at most 25% of the box). A wave
+  whose top label is not read keeps the estimate (from Ppeak / VTi / EdiPeak and the waveforms, as up to 0.2.0); a
+  bottom label that is not read comes from the 0 baseline. Labels without a template (other scales, other screens)
+  are never read; add them with `tools/build_axis_labels.py` (extract key frames of a video, group the label boxes,
+  name the groups by eye, build). About 2 ms per breath.
 - Each valid breath saved as:
 
 ```
@@ -323,6 +337,7 @@ Includes (see 3.3):
 - OCR accuracy depends on image quality
 - Requires correct ROI configuration
 - Sensitive to UI layout changes
+- Axis labels are read only for the labels in `axis_labels.npz` (made from one Servo-U video); other scales use the estimate
 
 ---
 

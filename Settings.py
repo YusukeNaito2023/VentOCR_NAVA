@@ -36,3 +36,7 @@ ROI_LIST_Abnormal_Detection = [
 # 0.2.0: digit templates of the numeric ROIs (glyphs.py; built by tools/build_value_glyphs.py from the Servo-U 1-h video
 # 2026-08-12 10-49-09, labels from EasyOCR, one set per ROI)
 VALUE_GLYPH_FILE = "value_glyphs.npz"
+
+# 0.2.1: templates of the waveform axis labels (axis_labels.py; built by tools/build_axis_labels.py from the key frames
+# of the Servo-U 1-h video 2026-08-12 10-49-09, labels checked by eye)
+AXIS_LABEL_FILE = "axis_labels.npz"

@@ -1,4 +1,5 @@
 import os
+from collections import Counter
 import cv2
 import numpy as np
 import pandas as pd
@@ -6,6 +7,7 @@ from tqdm import tqdm
 import Global_Setting as GS
 from . import Settings
 from . import sweep
+from . import axis_labels
 
 # Progress (overall) reporting is best-effort. Main processing continues even if the import fails.
 try:
@@ -314,6 +316,25 @@ def _scale_from_top(name, top_value, zero_px):
     top, bot = Y_RANGES[name]
     h = bot - top
     return {"min": round(-zero_px * top_value / (h - zero_px), 2), "max": top_value, "unit": SCALE_UNITS[name]}
+
+
+def _scales_from_labels(labels, scale, zero):
+    """0.2.1: replace the estimated scales by the axis labels read on the breath's image (axis_labels.py). A wave keeps
+    its estimate when its top label was not read. A bottom label that was not read is taken from the 0 baseline
+    (Pressure, Flow) as in the estimate; Volume and Edi start at 0."""
+    out = dict(scale)
+    for name in ("Pressure", "Flow", "Volume", "Edi"):
+        top, bottom = labels.get(f"{name}_top"), labels.get(f"{name}_bottom")
+        if top is None or top <= 0:
+            continue
+        if name in ZERO_Y:
+            sc = _scale_from_top(name, top, zero[name])
+            if bottom is not None and bottom < 0:
+                sc["min"] = bottom
+        else:
+            sc = {"min": 0.0, "max": top, "unit": SCALE_UNITS[name]}
+        out[name] = sc
+    return out
 
 
 def _estimate_scales(records, rate):
@@ -773,6 +794,8 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     row_of_frame = {int(f): i for i, f in enumerate(frames["Frame"])}
 
     keep_root = os.path.join(os.path.dirname(os.path.normpath(frames_root)), KEEP_DIR_NAME)
+    label_reader = axis_labels.load_reader(os.path.dirname(os.path.abspath(__file__)), Settings.AXIS_LABEL_FILE) \
+        if scale_enabled else None
 
     def path_of(row):
         """Kept image of the frame if initial_ocr kept it, else the app's frame image."""
@@ -844,7 +867,8 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
                 series = series.rolling(window=10, center=True, min_periods=1).mean()
             waves[name] = series.to_numpy(float)
         pl.update(img=img_row, c_lo=c_lo, c_hi=c_hi, cols=cols, xs=xs, strip=strip, waves=_reject_volume_troughs(waves),
-                  zero={nm: _zero_px(img, nm) for nm in ZERO_Y})
+                  zero={nm: _zero_px(img, nm) for nm in ZERO_Y},
+                  labels=label_reader.read(img) if label_reader is not None else {})
         return True
 
     for pl in tqdm(plans, total=len(plans)):
@@ -916,7 +940,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             "ppeak": breaths.at[pl["k"], "Scale_Ppeak"] if "Scale_Ppeak" in breaths else np.nan,
             "vti": breaths.at[pl["k"], "Scale_VTi"] if "Scale_VTi" in breaths else np.nan,
             "edi_peak": breaths.at[pl["k"], "EdiPeak"] if "EdiPeak" in breaths else np.nan,
-            "edi_full": waves["Edi"], "marks": marks, "alerts": alerts,
+            "edi_full": waves["Edi"], "marks": marks, "alerts": alerts, "labels": pl.get("labels", {}),
             "start_name": path_of(pl["s"]), "end_name": path_of(pl["img"]),
         })
         pl.pop("strip", None)
@@ -924,6 +948,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     # ---- 4. axis scales, physical units, output on the analyzed video's columns ----
     estimated = _estimate_scales(records, speed_px_s) if scale_enabled else {}
     last_edi_scale = None
+    label_counts = Counter()
     out_cols = {c: {} for c in ("P_min", "P_max", "F_min", "F_max", "V_min", "V_max", "E_min", "E_max", "Wave_T0", "Wave_Rate",
                                 "Wave_Points", "Trigger", "Trigger_Source", "Trig_White_P", "Trig_White_F", "Trig_White_E",
                                 "Start_File_Name", "End_File_Name", "Alert_Wave")}
@@ -937,6 +962,9 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
                 scale["Edi"] = last_edi_scale = edi_scale
             elif last_edi_scale is not None:
                 scale["Edi"] = last_edi_scale
+            # 0.2.1: the axis labels on the breath's image, where they could be read, replace the estimates
+            scale = _scales_from_labels(rec["labels"], scale, rec["zero"])
+            label_counts.update(rec["labels"].keys())
         base_cols = np.arange(rec["c0"], rec["c1"], dtype=float)
         n0, n1 = int(np.ceil(rec["c0"] * sx)), int(np.ceil(rec["c1"] * sx))
         native = np.arange(n0, n1)
@@ -973,6 +1001,9 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
     breaths["Alert"] = [",".join(dict.fromkeys([x for x in (a.split(",") + w.split(",")) if x and x != "nan"]))
                         for a, w in zip(alert, breaths["Alert_Wave"].fillna("").astype(str))]
     breaths = breaths.drop(columns=["Alert_Wave"])
+    if records and label_reader is not None:
+        print(f"[BreathsToCSVs] axis labels read on {len(records)} breaths: "
+              + ", ".join(f"{slot} {label_counts[slot]}" for slot in axis_labels.LABEL_ROWS))
     report_df = pd.DataFrame(skip_logs, columns=["BreathNumber", "Status", "Reason", "Details"]).sort_values("BreathNumber")
     report_df.to_csv(report_path, index=False)
     return written, breaths
