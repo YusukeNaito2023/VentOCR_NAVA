@@ -7,7 +7,7 @@
 ### Changes in 0.2.1
 
 - Breaths.csv columns renamed: the breath's own value has the plain name (`VTe`, `VTi`, `Ppeak`, `Cdyn`, `EdiPeak`, `TiTtot`) and what the screen showed has the suffix `_displayed` (`VTe_displayed`, `Cdyn_displayed`, `EdiPeak_displayed`, `TiTtot_displayed`). Up to 0.2.0: `Real_VTe`, `Real_VTi`, `Real_Ppeak`, `Real_Cdyn`, `VTe`, `Cdyn`, `EdiPeak`, `IE_Ratio`. `VTi` / `Ppeak` are now the last reading of the breath, `TiTtot` is the value shown after the breath, and `EdiPeak` is empty when the screen held the previous breath's value or showed "***" (see 3.3). Frames.csv is unchanged.
-- Fewer misread values: Cdyn is the value shown at the end of the breath (the display often changes 1-3 frames after VTe); EasyOCR reads that are not a plain number are not used; Ti/Ttot has extra digit templates and needs two decimals.
+- Fewer misread values: Cdyn is the value shown at the end of the breath (the display often changes 1-3 frames after VTe); EasyOCR reads that are not a plain number (including a space between digits) are not used; Ti/Ttot has extra digit templates and needs two decimals, except that a breath with no two-decimal read takes its "0.d" read as 0.d0.
 - VTe / VTi of 1000 ml or more are read correctly: their 4 digits are wider than the ROI, so a wider ROI is read with its own templates when the ROI cannot be read.
 - VTe / VTi reads above 5000 ml are not used (a frame caught while the display changes).
 - VTe skips a value seen only on the breath's last frame (the display can show the next breath's VTe one frame early).
@@ -143,7 +143,7 @@ Engine/NAVA/
 
 #### Template Reading
 
-- The numeric ROIs are read on every frame by digit template matching (`glyphs.py`, templates `value_glyphs.npz`, one set per ROI). EasyOCR is used only when the templates cannot read an ROI, and its read is used only when it is a plain number (0.2.1). A digit may have a second template for a slightly different drawing (0.2.1: Ti/Ttot; `tools/build_value_glyphs.py --add-variants`). VTe and VTi also have a wider ROI with its own templates (`Settings.WIDE_ROIS`, sets `VTe_wide` / `VTi_wide`), read when the ROI cannot be read, because 4-digit values are wider than the ROI (0.2.1; `tools/build_value_glyphs.py --from-rois`). New templates (another ventilator or screen) can be built with `tools/build_value_glyphs.py` from an analysis of a video of that screen.
+- The numeric ROIs are read on every frame by digit template matching (`glyphs.py`, templates `value_glyphs.npz`, one set per ROI). EasyOCR is used only when the templates cannot read an ROI, and its read is used only when it is a plain number, with no space between digits (0.2.1). A digit may have a second template for a slightly different drawing (0.2.1: Ti/Ttot; `tools/build_value_glyphs.py --add-variants`). VTe and VTi also have a wider ROI with its own templates (`Settings.WIDE_ROIS`, sets `VTe_wide` / `VTi_wide`), read when the ROI cannot be read, because 4-digit values are wider than the ROI (0.2.1; `tools/build_value_glyphs.py --from-rois`). New templates (another ventilator or screen) can be built with `tools/build_value_glyphs.py` from an analysis of a video of that screen.
 
 ---
 

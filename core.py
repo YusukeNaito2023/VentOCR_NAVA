@@ -545,6 +545,11 @@ def post_ocr(df, Analyze_Id, user_ID, settings={}) :
             .apply(lambda s: s.dropna().iloc[-1] if not s.dropna().empty else np.nan)
         )
         df_breath["IE_Ratio"] = df_breath["BreathNumber"].map(last_ie_per_breath)
+        # 0.2.1: a breath with no two-decimal read takes its last "0.d" read as 0.d0 (EasyOCR drops the trailing 0 of
+        # "0.20"; on the 1 h Servo-U video such reads were right in 52 of 58 breaths)
+        short_ie = df["IE_Ratio_raw"].apply(_ie_one_decimal)
+        last_short = short_ie.groupby(df["BreathNumber"]).agg(_last_reading)
+        df_breath["IE_Ratio"] = df_breath["IE_Ratio"].fillna(df_breath["BreathNumber"].map(last_short))
 
     df_breath = breath_columns(df, df_breath)
 
@@ -654,7 +659,10 @@ def _parse_ocr_result(result):
 def _is_clean_number(key, raw_text):
     """0.2.1: an EasyOCR read is used only when its text is a plain number ("461", "7.3"; Cdyn may end with the star
     the Servo-U puts after some values). Other characters mean a misread digit ("46]" for 461, "110z" for 1067,
-    "31." for 31.7); the value is then left empty, so the breath takes its value from the frames that were read."""
+    "31." for 31.7); the value is then left empty, so the breath takes its value from the frames that were read.
+    A space between digits is also a misread ("14 8" or "68 1", where the decimal point was not seen)."""
+    if re.search(r"\d\s+\d", raw_text):
+        return False
     t = raw_text.replace(" ", "")
     if key == "Cdyn":
         t = t.rstrip("*")
@@ -1134,6 +1142,15 @@ def _normalize_one_dot_1xx(s_pre: str) -> str:
 
 
 # ===== Replaced from here: parse_IE_ratio =====
+def _ie_one_decimal(ie_raw):
+    """0.2.1: a Ti/Ttot read of the form "0.d" (one decimal) as the value 0.d0, else NaN. parse_IE_ratio leaves such
+    a read empty; post_ocr uses it only for a breath that has no two-decimal read."""
+    t = re.sub(r"[^0-9.]", "", _preclean_space_comma_to_colon(ie_raw) or "")
+    if t.startswith("."):
+        t = "0" + t
+    return float(t) if re.fullmatch(r"0\.[1-9]", t) else np.nan
+
+
 def parse_IE_ratio(ie_raw):
     """
     Convert IE_Ratio_raw -> IE_Ratio (numeric I/(I+E)).
