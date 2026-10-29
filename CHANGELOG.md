@@ -34,6 +34,23 @@ Fewer misread values. Breath boundaries and waveforms are unchanged. Checked aga
 - Waveform axis scales from the axis labels: the labels at the left edge of each band (top of every band, bottom of Pressure and Flow) are read on the image the breath's waveform is read from (`axis_labels.py`, templates `axis_labels.npz` made with `tools/build_axis_labels.py` from the 432 key frames of the Servo-U 1-h video, 70 labels named by eye). Templates only, no EasyOCR, about 2 ms per breath. At 1280x720 the digits are 7-8 px tall and blurred (6, 5, 9 and 0 look alike; the minus touches the digit), so a label is compared as a whole: RMS difference of the gray levels, the same label about 1.5 (at most 3.3 on key frames not used for the templates), a different label 7.6 or more, also when that label has no template. A label is used only within 4.5 and with the next best at least 3 further; a waveform crossing the label is left out (at most 25% of the box). Where the top label is not read, the estimate is used as before. Up to 0.2.0 all scales were estimated: on 20 breaths checked by eye, Flow was wrong on 5 (e.g. 50 for 45, 130 for 150), Volume on 2 (850 for 650) and Edi on 7 (13.8-31.7 for 20). Now on the same 20 breaths 115 of 120 labels are read and all of them are right (not read: 5, which keep the estimate). The hour has many more scales than expected (Pressure 14-60, Flow 40-150, Volume 450-2250). Clips (video 600-780, 990-1050, 1240-1560, 1800-1860 s): labels read on most breaths (Pressure top 202/225, Flow top 202/225, Volume 210/225, Edi 222/225); every changed scale checked on the image was the screen's label; the breath values are unchanged.
 - Images kept for post_ocr (`NAVA_Kept`) now also include the display-update frame and the 2 frames after it (0, 1, 2, 5, 10 after the last frame before the update). In 0.2.0 the app still had to make 76 images per hour, most of them the update frame itself; on both clips it made none.
 
+### Check on the Servo-U 1-h video (2026-10-29)
+Analysed once with the CLI (5 workers): 272 s (0.2.0: 8.3 min), 1004 breaths, Disconnect on 31 (video 1424-1559 s).
+Against the Servo Tracker export, on the 961 breaths matched to the same export breath in both versions (0.2.0 -> 0.2.1):
+
+| Value | 0.2.0 | 0.2.1 | newly wrong |
+|---|---|---|---|
+| `VTe` (was `Real_VTe`) | 899 | 910 | 1 (BN 164: "14 8", now empty) |
+| `VTi` (was `Real_VTi`) | 899 | 949 | 6 (5 Short breaths) |
+| `Ppeak` (was `Real_Ppeak`) | 952 | 955 | 0 |
+| `VTe_displayed` (was `VTe`) | 898 | 911 | 1 (as BN 164) |
+| `Cdyn_displayed` (was `Cdyn`), of 916 | 836 | 901 | 1 (107 for 106.5) |
+| `TiTtot_displayed` (was `IE_Ratio`), of 364 | 316 | 339 | 3 |
+| `EdiPeak_displayed` (was `EdiPeak`), of 954 | 952 | 952 | 0 |
+
+`Cdyn` 900/916 and `TiTtot` 340/365 (new). `EdiPeak` is empty on 194 breaths where the screen held the previous value (the export repeats it on 182 of them); the kept values equal the export on 758/760.
+Axis labels read on the 1001 breaths with a waveform: Pressure top 931, bottom 992; Flow top 942, bottom 1001; Volume 964; Edi 988. The scale changed from the estimate on Pressure top 25, Pressure bottom 215, Flow 207, Volume 79 and Edi 333 breaths (by up to 79%, 44%, 57%, 66% and 180%). In 40 breaths drawn at random from those with a changed top, every label read was the screen's label; labels not read kept the estimate (e.g. Flow 160 where the screen shows 140 behind the waveform).
+
 ## 0.2.0 (2026-10-27)
 Results change (breath boundaries, waveforms, new columns). Same approach as the Hamilton engine. Needs VentOCR 0.8.0 or later (frames decoded straight from the video: exact frame times and much faster; one hour of Servo-U video took 792 s with NAVA 0.1.x on VentOCR 0.8.0 and 495 s with 0.2.0).
 
