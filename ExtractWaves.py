@@ -320,11 +320,14 @@ def _scale_from_top(name, top_value, zero_px):
 
 def _scales_from_labels(labels, scale, zero):
     """0.2.1: replace the estimated scales by the axis labels read on the breath's image (axis_labels.py). A wave keeps
-    its estimate when its top label was not read. A bottom label that was not read is taken from the 0 baseline
-    (Pressure, Flow) as in the estimate; Volume and Edi start at 0."""
+    its estimate when its top label was not read, except Flow: its scale is symmetric on the Servo-U (60 / -60), so a
+    read bottom label gives the top when the top label is hidden (A81-12). A bottom label that was not read is taken
+    from the 0 baseline (Pressure, Flow) as in the estimate; Volume and Edi start at 0."""
     out = dict(scale)
     for name in ("Pressure", "Flow", "Volume", "Edi"):
         top, bottom = labels.get(f"{name}_top"), labels.get(f"{name}_bottom")
+        if name == "Flow" and top is None and bottom is not None and bottom < 0:
+            top = -bottom
         if top is None or top <= 0:
             continue
         if name in ZERO_Y:

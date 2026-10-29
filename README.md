@@ -274,7 +274,8 @@ Abnormal = 1
   the labels in `axis_labels.npz` (RMS difference of the gray levels; the same label about 1.5, a different label 7.6
   or more, also one without a template). A label is used only when its best template is within 4.5 and the next best
   is at least 3 further away; pixels of a waveform crossing the label are left out (at most 25% of the box). A wave
-  whose top label is not read keeps the estimate (from Ppeak / VTi / EdiPeak and the waveforms, as up to 0.2.0); a
+  whose top label is not read keeps the estimate (from Ppeak / VTi / EdiPeak and the waveforms, as up to 0.2.0),
+  except Flow, whose scale is symmetric on the Servo-U: a read bottom label gives the top (max = -bottom). A
   bottom label that is not read comes from the 0 baseline. Labels without a template (other scales, other screens)
   are never read; add them with `tools/build_axis_labels.py` (extract key frames of a video, group the label boxes,
   name the groups by eye, build). About 2 ms per breath.
