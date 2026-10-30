@@ -360,14 +360,14 @@ def _estimate_scales(records, rate):
     records: dicts in breath order (breath, waves, zero, ppeak, vti)"""
     p_tops = [_snap(_top_from_value(r["ppeak"], _peak_px(r["waves"].get("Pressure", [])), r["zero"]["Pressure"], "Pressure"),
                     SCALE_SNAP["Pressure"]) for r in records]
-    v_tops = [_snap(_top_from_value(r["vti"], _peak_px(r["waves"].get("Volume", [])), 0.0, "Volume"),
+    v_tops = [_snap(_top_from_value(r["vti"], _peak_px(r.get("volume_read", r["waves"].get("Volume", []))), 0.0, "Volume"),
                     SCALE_SNAP["Volume"]) for r in records]
     p_tops, v_tops = _smooth_tops(p_tops), _smooth_tops(v_tops)
     f_tops = []
     for r, vt in zip(records, v_tops):
         est = None
         if vt is not None and "Flow" in r["waves"] and "Volume" in r["waves"]:
-            est = _flow_top_from_volume(r["waves"]["Flow"], r["waves"]["Volume"], _scale_from_top("Volume", vt, 0.0),
+            est = _flow_top_from_volume(r["waves"]["Flow"], r.get("volume_read", r["waves"]["Volume"]), _scale_from_top("Volume", vt, 0.0),
                                         r["zero"]["Flow"], rate)
         f_tops.append(_snap(est, SCALE_SNAP["Flow"]))
     f_tops = _smooth_tops(f_tops)
@@ -937,8 +937,9 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
                 series = series.rolling(window=10, center=True, min_periods=1).mean()
             waves[name] = series.to_numpy(float)
         waves = _reject_volume_troughs(waves)
-        waves["Volume"] = _fill_volume_zero(waves["Volume"])
-        pl.update(img=img_row, c_lo=c_lo, c_hi=c_hi, cols=cols, xs=xs, strip=strip, waves=waves,
+        volume_read = np.asarray(waves["Volume"], float)   # as read: the scale estimate uses this (not the 0 fill)
+        waves["Volume"] = _fill_volume_zero(volume_read)
+        pl.update(volume_read=volume_read, img=img_row, c_lo=c_lo, c_hi=c_hi, cols=cols, xs=xs, strip=strip, waves=waves,
                   zero={nm: _zero_px(img, nm) for nm in ZERO_Y},
                   labels=label_reader.read(img) if label_reader is not None else {})
         return True
@@ -1009,6 +1010,7 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
                                static=static_white[:, pl["xs"]] if static_white is not None else None)
         records.append({
             "breath": pl["bn"], "k": pl["k"], "c0": c0, "c1": c1, "waves": waves, "zero": pl["zero"],
+            "volume_read": pl["volume_read"][i0:i1],
             "ppeak": breaths.at[pl["k"], "Scale_Ppeak"] if "Scale_Ppeak" in breaths else np.nan,
             "vti": breaths.at[pl["k"], "Scale_VTi"] if "Scale_VTi" in breaths else np.nan,
             "edi_peak": breaths.at[pl["k"], "EdiPeak"] if "EdiPeak" in breaths else np.nan,
