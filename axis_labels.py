@@ -9,6 +9,9 @@ template. A label is read only when its best template is within MAX_RMS and the 
 away; otherwise (a label without a template, a pop-up, an unusual image) it is not read and the caller keeps its
 estimate. Pixels of a waveform crossing the label (coloured) are left out of the comparison.
 
+0.2.2: a label may have more than one template (recordings drawn slightly differently, e.g. Servo4 vs Servo-001); the
+gap is then measured to the best template of a different label.
+
 This module imports nothing from the engine (tools/build_axis_labels.py uses it directly).
 """
 import os
@@ -71,12 +74,13 @@ class AxisLabelReader:
                     continue
                 diff = (normalized(g, m) - templates)[:, ~m]
                 best = np.minimum(best, np.sqrt((diff ** 2).mean(axis=1)))
-        order = np.argsort(best)
-        if not best[order[0]] <= MAX_RMS:
+        i = int(np.argmin(best))
+        if not best[i] <= MAX_RMS:
             return None
-        if len(order) > 1 and best[order[1]] - best[order[0]] < MIN_GAP:
+        other = [d for t, d in zip(texts, best) if t != texts[i]]
+        if other and min(other) - best[i] < MIN_GAP:
             return None
-        return float(texts[order[0]])
+        return float(texts[i])
 
     def read(self, img):
         """BASE_RESOLUTION BGR image -> {slot: value} of the labels that could be read."""

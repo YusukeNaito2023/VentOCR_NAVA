@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 0.2.2 (2026-10-30)
+More axis labels read. Breath boundaries, breath values and waveform shapes are unchanged; only axis scales that were estimated before can change.
+
+- The Servo-U chooses some axis scales by itself to fit the waveform: on the Servo-U recordings other than the 1-h video used for 0.2.1, Edi changes between 5 and 140 µV (often every few to tens of seconds) and Volume between 2 and 3300 ml. 0.2.1 had only the labels of that one video (Edi "20" only), so the other labels were not read and the scale was estimated (on 20 breaths checked by eye in 0.2.0, the Edi estimate was wrong on 7).
+- `axis_labels.npz` now has the labels seen on 7 Servo-U recordings (Servo-001, Servo-002, Servo4, Servo5, and three 1280x720 recordings; one frame every 60 s, read-only, 2449 frames): Edi 5-50, Volume 2-2250, Flow 8-150 (and the negatives), Pressure 14-60 / -6 to -2. Labels seen only once (e.g. Edi 60-140, Volume above 2250) were left out and keep the estimate.
+- A label may have several templates: Servo-002, Servo4 and Servo5 draw the labels slightly differently from Servo-001 (the 0.2.1 templates read none of Servo-002 / Servo4; "450" differs by RMS 7.0 where the same label is about 1.5). A read needs the gap of 3 to the best template of a different label (`axis_labels.py`; `tools/build_axis_labels.py build` adds a new template as another variant unless it is within RMS 3 of one already there).
+- Check: templates made from every second frame, checked on the others. Labels read: 87-100% per band and recording (the 1280x720 recording of 2025-09-10 has no picture). No label was read wrong: every group of identical boxes reads as one label, the reads of labels crossed by a waveform were checked by eye, and on the 432 key frames of the 0.2.1 video the reads are unchanged except one Volume "2" now read (right). Clips (video 990-1050 and 1240-1560 s): only `P_min` of 2 breaths changes (-4.59 estimated -> -4, the screen's label). About 4 ms per breath (was 2.5).
+
 ## 0.2.1 (2026-10-29)
 Fewer misread values. Breath boundaries and waveforms are unchanged. Checked against the Servo Tracker export on two 3-minute clips of the Servo-U 1-h video (video 600-780 s and 1830-2010 s).
 

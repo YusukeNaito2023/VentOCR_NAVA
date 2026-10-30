@@ -10,7 +10,8 @@
    clusters that are not a clean label (pop-ups, a line through the label, a label being redrawn).
 4. python tools/build_axis_labels.py build BOXES.npz OUT_DIR/clusters.json LABELS.json OUT.npz [EXISTING.npz]
    Each template is the average of its cluster. With EXISTING.npz (e.g. the engine's axis_labels.npz) its templates
-   are kept and the new ones added (a label already there is replaced).
+   are kept and the new ones added. A new template of a label already there is added as another variant of it
+   (0.2.2; e.g. a recording drawn slightly differently), unless it is within SAME_RMS of an existing one.
 Run it from anywhere; it imports axis_labels.py and Settings.py from the engine directory.
 """
 import json
@@ -26,6 +27,7 @@ import axis_labels as al  # noqa: E402
 import Settings  # noqa: E402
 
 CLUSTER_RMS = 5.0
+SAME_RMS = 3.0  # a new template this close to an existing one of the same label is not added
 
 
 def extract(video, out):
@@ -102,22 +104,26 @@ def build(boxes_path, clusters_path, labels_path, out, existing=None):
     z = np.load(boxes_path)
     clusters = json.load(open(clusters_path))
     labels = json.load(open(labels_path))
-    sets = {}
+    sets = {}  # slot -> [(text, template)]
     if existing:
         e = np.load(existing)
         for slot in al.LABEL_ROWS:
             if f"texts_{slot}" in e.files:
-                sets[slot] = dict(zip([str(t) for t in e[f"texts_{slot}"]], e[f"templates_{slot}"]))
+                sets[slot] = list(zip([str(t) for t in e[f"texts_{slot}"]], e[f"templates_{slot}"]))
     for slot, named in labels.items():
         for k, text in named.items():
             boxes = [_box(z[slot][i])[0] for i in clusters[slot][int(k)]]
-            sets.setdefault(slot, {})[text] = al.normalized(np.mean(boxes, 0)).astype(np.float32)
+            new = al.normalized(np.mean(boxes, 0)).astype(np.float32)
+            have = sets.setdefault(slot, [])
+            if any(t == text and np.sqrt(np.mean((tpl - new) ** 2)) <= SAME_RMS for t, tpl in have):
+                continue
+            have.append((text, new))
     arrays = {}
-    for slot, d in sets.items():
-        texts = sorted(d, key=float)
-        arrays[f"texts_{slot}"] = np.array(texts)
-        arrays[f"templates_{slot}"] = np.stack([d[t] for t in texts])
-        print(slot, texts)
+    for slot, items in sets.items():
+        items = sorted(items, key=lambda x: float(x[0]))
+        arrays[f"texts_{slot}"] = np.array([t for t, _ in items])
+        arrays[f"templates_{slot}"] = np.stack([tpl for _, tpl in items])
+        print(slot, [t for t, _ in items])
     np.savez_compressed(out, **arrays)
 
 

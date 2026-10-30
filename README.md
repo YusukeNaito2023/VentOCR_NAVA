@@ -2,7 +2,11 @@
 
 ## Version
 
-0.2.1 (see CHANGELOG.md)
+0.2.2 (see CHANGELOG.md)
+
+### Changes in 0.2.2
+
+- Axis-label templates for the scales the Servo-U chooses by itself (it rescales Edi and Volume, and on some recordings the other bands, to fit the waveform): Edi 5-50, Volume 2-2250, Flow 8-150, Pressure 14-60, from 7 Servo-U recordings. A label may have several templates (recordings draw the labels slightly differently). Results are unchanged except axis scales that were estimated before.
 
 ### Changes in 0.2.1
 
@@ -82,7 +86,7 @@ Engine/NAVA/
 ├ core.py
 ├ ExtractWaves.py
 ├ glyphs.py, value_glyphs.npz        (digit templates of the numeric ROIs)
-├ axis_labels.py, axis_labels.npz    (templates of the waveform axis labels, 0.2.1)
+├ axis_labels.py, axis_labels.npz    (templates of the waveform axis labels, 0.2.1; more labels in 0.2.2)
 ├ tools/build_value_glyphs.py, tools/build_axis_labels.py
 ├ sample_frame.jpg
 └ README.md
@@ -278,7 +282,8 @@ Abnormal = 1
   except Flow, whose scale is symmetric on the Servo-U: a read bottom label gives the top (max = -bottom). A
   bottom label that is not read comes from the 0 baseline. Labels without a template (other scales, other screens)
   are never read; add them with `tools/build_axis_labels.py` (extract key frames of a video, group the label boxes,
-  name the groups by eye, build). About 2 ms per breath.
+  name the groups by eye, build). A label may have several templates (0.2.2; recordings draw the labels slightly
+  differently); a read then needs the gap of 3 to the best template of a different label. About 4 ms per breath.
 - Each valid breath saved as:
 
 ```
@@ -338,7 +343,7 @@ Includes (see 3.3):
 - OCR accuracy depends on image quality
 - Requires correct ROI configuration
 - Sensitive to UI layout changes
-- Axis labels are read only for the labels in `axis_labels.npz` (made from one Servo-U video); other scales use the estimate
+- Axis labels are read only for the labels in `axis_labels.npz` (made from 7 Servo-U recordings); other scales and recordings that draw the labels differently use the estimate
 
 ---
 
