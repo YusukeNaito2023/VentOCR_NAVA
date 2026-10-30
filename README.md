@@ -7,6 +7,7 @@
 ### Changes in 0.2.2
 
 - Axis-label templates for the scales the Servo-U chooses by itself (it rescales Edi and Volume, and on some recordings the other bands, to fit the waveform): Edi 5-50, Volume 2-2250, Flow 8-150, Pressure 14-60, from 7 Servo-U recordings. A label may have several templates (recordings draw the labels slightly differently). Results are unchanged except axis scales that were estimated before.
+- Edi under the Edi bar graph: the last sweep columns of the Edi band (x 847-888 at 1280x720) hold the Edi bar graph (purple, same hue as the trace) and a white dashed line, and were not read up to 0.2.1, so every breath drawn there had no Edi for about 0.5 s (329 of 1000 breaths of the Servo-U 1-h video). The trace is now read there as the pixels brighter than the bar (saturation >= 80, value >= 125); the dashed line's columns and columns without such pixels are filled linearly from both sides.
 
 ### Changes in 0.2.1
 

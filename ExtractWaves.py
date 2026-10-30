@@ -130,6 +130,16 @@ SAT_MIN = 40            # saturation below this is treated as background/gray te
 VAL_MIN = 60            # value below this is treated as background and excluded
 VAL_MIN_LEFT = 45       # left edge (140-175) is the label area where waveforms are dark, so relax the value condition
 # Fallback for white (tip of the sweep cursor)
+# 0.2.2 (A81-14): the Servo-U draws the Edi bar graph (a purple block whose height follows Edi, same hue as the trace) and a
+# white dashed line in the last sweep columns of the Edi band. Up to 0.2.1 those columns were not read at all, so every
+# breath drawn there had no Edi for about 0.5 s (333 of 1000 breaths of the Servo-U 1-h video). The trace is brighter than
+# the bar (value about 130-175 vs 85-115) and more saturated than the dashed line (about 130-230 vs 35-55): in these
+# columns only such pixels are the trace, and columns where none is left are filled linearly from both sides. The dashed
+# line's own columns are not read at all (where it crosses the bar its edge pixels look like the trace).
+EDI_BAR_X = (847, 888)
+EDI_DASH_X = (878, 883)
+EDI_BAR_SAT_MIN = 80
+EDI_BAR_VAL_MIN = 125
 WHITE_SAT_MAX = 45
 WHITE_VAL_MIN = 140
 BORDER_ROWS = 2         # rows excluded from the top of the band (panel border line)
@@ -406,6 +416,26 @@ def _edi_scale_from_peak(edi_peak, edi_pixels, min_peak_px=8):
     return {"min": 0, "max": round(ep * H / peak_px, 2), "unit": SCALE_UNITS["Edi"]}
 
 
+def _fill_bar_gaps(values, xs):
+    """0.2.2: fill missing Edi columns in the bar graph columns (EDI_BAR_X) linearly from the read columns on both sides.
+    Only gaps that lie entirely in those columns are filled (other gaps are left as they are, as with imputation off)."""
+    v = np.asarray(values, float).copy()
+    miss = np.isnan(v)
+    in_bar = (xs >= EDI_BAR_X[0]) & (xs <= EDI_BAR_X[1])
+    i, n = 0, len(v)
+    while i < n:
+        if not miss[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and miss[j]:
+            j += 1
+        if i > 0 and j < n and in_bar[i:j].all():
+            v[i:j] = np.interp(np.arange(i, j), [i - 1, j], [v[i - 1], v[j]])
+        i = j
+    return v
+
+
 def _hue_circular_dist(hue_array, target_hue):
     """Return the circular hue distance (0-90)."""
     d = np.abs(hue_array.astype(np.int16) - int(target_hue))
@@ -428,8 +458,9 @@ def _column_runs(img, waveform_name, screen_xs=None):
         H, S, V = hsv_col[:, 0], hsv_col[:, 1], hsv_col[:, 2]
         global_x = int(screen_xs[x]) if screen_xs is not None else x + globals().get("x_start", 0)
 
-        # Rule: for Edi, invalidate from sweep position (847) onward (same spec as v1.1)
-        if waveform_name == "Edi" and 847 <= global_x:
+        # Edi bar graph and dashed line at the right end of the sweep (0.2.2; up to 0.2.1 these columns were not read)
+        in_bar = waveform_name == "Edi" and EDI_BAR_X[0] <= global_x
+        if in_bar and (global_x > EDI_BAR_X[1] or EDI_DASH_X[0] <= global_x <= EDI_DASH_X[1]):
             cols.append([])
             continue
 
@@ -447,10 +478,16 @@ def _column_runs(img, waveform_name, screen_xs=None):
             extra_ok = np.ones(h, dtype=bool)
 
         hue_dist = _hue_circular_dist(H, target_hue)
-        valid = (hue_dist <= HUE_TOLERANCE) & (S >= SAT_MIN) & (V >= val_min) & extra_ok
+        if in_bar:
+            valid = (hue_dist <= HUE_TOLERANCE) & (S >= EDI_BAR_SAT_MIN) & (V >= EDI_BAR_VAL_MIN)
+        else:
+            valid = (hue_dist <= HUE_TOLERANCE) & (S >= SAT_MIN) & (V >= val_min) & extra_ok
         # The top rows of the band are the panel border. Excluded because misclassified as waveform color they jump to the top (=h)
         valid[:BORDER_ROWS] = False
 
+        if not valid.any() and in_bar:
+            cols.append([])                     # no white fallback: the dashed line is white
+            continue
         if not valid.any():
             # Fallback: retry with white (sweep cursor tip, and the white part of the trace at a patient trigger).
             # 0.2.0: the rows of the panel title text ("Paw cmH2O") are not used, and every vertical run of white pixels
@@ -597,7 +634,11 @@ def _extract_waveform(img, target_bgr, max_dist=40, waveform_name=None, y_offset
     if not segs:
         return list(out)
     # Line thickness (run height on gentle parts). Used to pull range ends toward the line center
-    widths = np.array([c[1] - c[0] + 1 for c in chosen if c is not None])
+    # (0.2.2: not in the Edi bar columns, where only the bright core of the line is kept)
+    keep = [i for i, c in enumerate(chosen) if c is not None]
+    if waveform_name == "Edi" and screen_xs is not None:
+        keep = [i for i in keep if not EDI_BAR_X[0] <= screen_xs[i] <= EDI_BAR_X[1]] or keep
+    widths = np.array([chosen[i][1] - chosen[i][0] + 1 for i in keep])
     half = (float(np.clip(np.percentile(widths, 25), 1, 5)) - 1) / 2
     for seg in segs:
         lo = np.array([chosen[i][0] for i in seg])
@@ -864,6 +905,8 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
         waves = {}
         for name, (y1, y2) in Y_RANGES.items():
             series = pd.Series(_extract_waveform(strip[y1:y2], COLOR_DEFINITIONS[name], COLOR_TOLERANCE, waveform_name=name, screen_xs=xs))
+            if name == "Edi":
+                series = pd.Series(_fill_bar_gaps(series.to_numpy(float), xs))
             if IMPUTATION:
                 series = series.interpolate(method="linear", limit_direction="both")
             if SMOOTHING:
