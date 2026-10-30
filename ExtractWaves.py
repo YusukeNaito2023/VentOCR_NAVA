@@ -140,6 +140,11 @@ EDI_BAR_X = (847, 888)
 EDI_DASH_X = (878, 883)
 EDI_BAR_SAT_MIN = 80
 EDI_BAR_VAL_MIN = 125
+# 0.2.2 (A81-15): at 0 ml the Servo-U draws the Volume trace along the bottom edge of the band, where it merges with the
+# panel border and is not read, so Volume was empty after each expiration (451 of 1011 breaths of the Servo-U 1-h video).
+# A gap in Volume whose read columns on both sides are within VOLUME_ZERO_PX of the band bottom is the trace lying on
+# the 0 line: it is set to 0. Other gaps stay empty.
+VOLUME_ZERO_PX = 4.0
 WHITE_SAT_MAX = 45
 WHITE_VAL_MIN = 140
 BORDER_ROWS = 2         # rows excluded from the top of the band (panel border line)
@@ -432,6 +437,25 @@ def _fill_bar_gaps(values, xs):
             j += 1
         if i > 0 and j < n and in_bar[i:j].all():
             v[i:j] = np.interp(np.arange(i, j), [i - 1, j], [v[i - 1], v[j]])
+        i = j
+    return v
+
+
+def _fill_volume_zero(values):
+    """0.2.2: Volume gaps between two read columns that are both on the 0 line (within VOLUME_ZERO_PX of the band
+    bottom) are 0 (the trace runs along the bottom edge there and is not read)."""
+    v = np.asarray(values, float).copy()
+    miss = np.isnan(v)
+    i, n = 0, len(v)
+    while i < n:
+        if not miss[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and miss[j]:
+            j += 1
+        if i > 0 and j < n and v[i - 1] <= VOLUME_ZERO_PX and v[j] <= VOLUME_ZERO_PX:
+            v[i:j] = 0.0
         i = j
     return v
 
@@ -912,7 +936,9 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             if SMOOTHING:
                 series = series.rolling(window=10, center=True, min_periods=1).mean()
             waves[name] = series.to_numpy(float)
-        pl.update(img=img_row, c_lo=c_lo, c_hi=c_hi, cols=cols, xs=xs, strip=strip, waves=_reject_volume_troughs(waves),
+        waves = _reject_volume_troughs(waves)
+        waves["Volume"] = _fill_volume_zero(waves["Volume"])
+        pl.update(img=img_row, c_lo=c_lo, c_hi=c_hi, cols=cols, xs=xs, strip=strip, waves=waves,
                   zero={nm: _zero_px(img, nm) for nm in ZERO_Y},
                   labels=label_reader.read(img) if label_reader is not None else {})
         return True
@@ -990,6 +1016,14 @@ def _BreathsToCSVs(breaths, frames, frames_root, output_dir, user_id, overwrite=
             "start_name": path_of(pl["s"]), "end_name": path_of(pl["img"]),
         })
         pl.pop("strip", None)
+
+    # 0.2.2 (A81-15): a Volume gap at the end of a breath that continues at the start of the next breath (adjacent
+    # columns, read from a later image) is one gap: on the 0 line when the read columns on both sides are
+    for a, b in zip(records, records[1:]):
+        if b["c0"] == a["c1"] and len(a["waves"]["Volume"]) and len(b["waves"]["Volume"]):
+            n = len(a["waves"]["Volume"])
+            joined = _fill_volume_zero(np.concatenate([a["waves"]["Volume"], b["waves"]["Volume"]]))
+            a["waves"]["Volume"], b["waves"]["Volume"] = joined[:n], joined[n:]
 
     # ---- 4. axis scales, physical units, output on the analyzed video's columns ----
     estimated = _estimate_scales(records, speed_px_s) if scale_enabled else {}
